@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Taruchhaya Invoice System</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=11">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+    <!-- Mobile Side Menu -->
+    <div id="mobileSideMenu" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; opacity: 0; transition: opacity 0.3s;" onclick="closeMobileMenu(event)">
+        <div id="mobileSideMenuContent" style="background: var(--bg-color); width: 250px; height: 100%; padding: 1.5rem; transform: translateX(-100%); transition: transform 0.3s; display: flex; flex-direction: column; gap: 1rem;" onclick="event.stopPropagation()">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h2 style="color: #2563eb; font-size: 1.2rem; font-weight: 700;">Menu</h2>
+                <span style="font-size: 1.8rem; cursor: pointer; color: var(--text-secondary); line-height: 1;" onclick="closeMobileMenu()">&times;</span>
+            </div>
+            <button class="btn btn-secondary full-width" style="text-align: left; justify-content: flex-start; display: flex; align-items: center; gap: 8px;" onclick="switchView('customersView'); closeMobileMenu()">👥 Customers</button>
+            <button class="btn btn-secondary full-width" style="text-align: left; justify-content: flex-start; display: flex; align-items: center; gap: 8px;" onclick="openModal('productModal'); closeMobileMenu()">📦 Products</button>
+            <div style="margin-top: auto;">
+                <button class="btn full-width logout-btn" onclick="logout()" style="background: #ef4444; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: 600; font-size: 1rem; box-shadow: 0 4px 10px rgba(239, 68, 68, 0.3); cursor: pointer; text-align: left; justify-content: flex-start; display: flex; align-items: center; gap: 8px; margin-bottom: 20px;">🚪 Logout</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile Top Header -->
+    <header class="mobile-header glass-panel" style="padding: 0.75rem 1rem; position: relative;">
+        <div style="width: 100%; display: flex; justify-content: space-between; align-items: center;">
+            <div style="font-size: 1.8rem; cursor: pointer; color: #2563eb; line-height: 1; display: flex; align-items: center;" onclick="openMobileMenu()">☰</div>
+            <div style="display: flex; flex-direction: column; align-items: center; flex: 1;">
+                <h1 style="background: none; color: #2563eb; -webkit-text-fill-color: initial; margin: 0; font-size: 1.2rem; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                    Taruchhaya Invoice 
+                    <span id="cloudStatusStarMobile" style="color: #ef4444; font-size: 1rem; text-shadow: 0 0 5px rgba(239, 68, 68, 0.4);" title="Not connected to cloud">★</span>
+                </h1>
+                <p id="mobileHeaderDate" style="color: #64748b; font-size: 0.75rem; margin-top: 2px; font-weight: 500;"></p>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; justify-content: center; text-align: right;">
+                <span style="font-size: 0.55rem; color: #64748b; line-height: 1; margin-bottom: 2px;">Crafted by</span>
+                <span style="font-family: 'Dancing Script', cursive; font-size: 0.9rem; color: #1e293b; font-weight: 600; line-height: 1;">Swapnil Sarkar</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="app-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-panel">
+            <div class="sidebar-header">
+                <h1 style="background: none; color: #2563eb; -webkit-text-fill-color: initial; display: flex; align-items: center; gap: 8px;">
+                    Taruchhaya Invoice 
+                    <span id="cloudStatusStar" style="color: #ef4444; font-size: 1.3rem; text-shadow: 0 0 5px rgba(239, 68, 68, 0.4);" title="Not connected to cloud">★</span>
+                </h1>
+                <p id="sidebarDate" style="color: #64748b; font-size: 0.9rem; margin-top: 6px; font-weight: 500;"></p>
+            </div>
+            <nav class="sidebar-nav">
+                <button class="btn btn-primary full-width" onclick="switchView('homeView')">🏠 Dashboard</button>
+                <button class="btn btn-secondary full-width" onclick="switchView('mainView')">➕ New Order</button>
+                <button class="btn btn-secondary full-width" onclick="switchView('billsView')">📁 Saved Bills</button>
+                <button class="btn btn-secondary full-width" onclick="switchView('historyView')">🧾 Payment History</button>
+                <button class="btn btn-secondary full-width" onclick="switchView('customersView')">👥 Customers</button>
+                <button class="btn btn-secondary full-width" onclick="openModal('productModal')">📦 Manage Products</button>
+                <button class="btn btn-secondary full-width" onclick="openPaymentModal()">💰 Record Payment</button>
+            </nav>
+            <div style="margin-top: auto;">
+                <button class="btn full-width logout-btn" onclick="logout()" style="background: #ef4444; color: white; border: none; margin-top: 20px; padding: 12px; border-radius: 8px; font-weight: 600; font-size: 1rem; box-shadow: 0 4px 10px rgba(239, 68, 68, 0.3); cursor: pointer; transition: transform 0.2s; margin-bottom: 20px;">🚪 Logout</button>
+            </div>
+        </aside>
+
+        <div class="app-container" style="position: relative;">
+                <!-- Dashboard Home View -->
+            <main class="view-page" id="homeView" style="display:none; padding-bottom: 20px; position: relative;">
+                
+                <div class="dashboard-header-container" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+                    <div class="dashboard-header">
+                        <h2 style="font-size: 1.8rem; font-weight: 600; color: #334155;">Business Overview</h2>
+                        <p style="color: #64748b;">Welcome back! Here's what's happening with your store today.</p>
+                    </div>
+                    
+                    <!-- Credit on the top right (Hidden on mobile) -->
+                    <div style="text-align: right; display: flex; flex-direction: column; align-items: flex-end;" class="crafted-by-credit desktop-only-credit">
+                        <span style="font-size: 0.75rem; color: #64748b; margin-bottom: 2px;">Crafted with passion by</span>
+                        <span style="font-family: 'Dancing Script', cursive; font-size: 1.8rem; color: #1e293b; font-weight: 600; letter-spacing: 1px; line-height: 1;">Swapnil Sarkar</span>
+                    </div>
+                </div>
+                
+                <!-- Quick Stats Row -->
+                <div class="quick-stats-grid">
+                    <div class="stat-card glass-panel">
+                        <div class="stat-icon" style="background: #f1f5f9; color: #475569;">💰</div>
+                        <div class="stat-content">
+                            <span class="stat-label">Total Revenue</span>
+                            <h3 class="stat-value" id="dashTotalRevenue">₹0.00</h3>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Dashboard Grid -->
+                <div class="dashboard-main-grid">
+                    <!-- Receivables Card -->
+                    <div class="glass-panel section-card dashboard-card">
+                        <h2 style="font-size: 1rem; color: var(--text-secondary); margin-bottom: 1rem;">TOTAL RECEIVABLES</h2>
+                        <div style="margin-bottom: 1.5rem;">
+                            <span style="font-size: 0.9rem; color: var(--text-secondary);">Total Unpaid Invoices</span>
+                            <h3 style="font-size: 1.5rem; font-weight: 700; color: var(--text-primary);" id="dashTotalUnpaid">₹0.00</h3>
+                        </div>
+                        
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-segment current-segment" id="dashCurrentBar" style="width: 50%;"></div>
+                            <div class="progress-bar-segment overdue-segment" id="dashOverdueBar" style="width: 50%;"></div>
+                        </div>
+                        
+                        <div class="receivables-breakdown">
+                            <div>
+                                <span style="color: #64748b; font-weight: 500; font-size: 0.9rem;">Current</span>
+                                <h4 style="font-size: 1.1rem; margin-top: 4px; color: #334155;" id="dashCurrentAmount">₹0.00</h4>
+                            </div>
+                            <div>
+                                <span style="color: #94a3b8; font-weight: 500; font-size: 0.9rem;">Overdue</span>
+                                <h4 style="font-size: 1.1rem; margin-top: 4px; color: #334155;" id="dashOverdueAmount">₹0.00</h4>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Cash Flow Chart Card -->
+                    <div class="glass-panel section-card dashboard-card cash-flow-card">
+                        <h2 style="font-size: 1rem; color: var(--text-secondary); margin-bottom: 1rem;">CASH FLOW (LAST 7 DAYS)</h2>
+                        <div class="cash-flow-container">
+                            <div class="chart-wrapper">
+                                <canvas id="cashFlowChart"></canvas>
+                            </div>
+                            <div class="cash-flow-summary">
+                                <div class="summary-item">
+                                    <span class="summary-label">Opening Balance</span>
+                                    <span class="summary-val text-sober" id="dashOpeningBal">₹0.00</span>
+                                </div>
+                                <div class="summary-item">
+                                    <span class="summary-label">Incoming (Sales)</span>
+                                    <span class="summary-val text-sober" id="dashIncoming">₹0.00 <small style="color: #94a3b8;">+</small></span>
+                                </div>
+                                <div class="summary-item">
+                                    <span class="summary-label">Closing Balance</span>
+                                    <span class="summary-val text-sober" style="font-weight: 600; border-top: 1px solid var(--panel-border); padding-top: 8px; margin-top: 8px;" id="dashClosingBal">₹0.00 <small style="color: #94a3b8;">=</small></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Main Content Grid (New Order) -->
+            <main class="main-grid view-page" id="mainView" style="display:none;">
+
+                <!-- Left Column: Customer & Product Selection -->
+                <div class="left-col">
+                    <!-- Customer Section -->
+                    <section class="glass-panel section-card">
+                        <h2>1. Select Customer</h2>
+                        <div class="input-group customer-input-group">
+                            <select id="customerSelect" onchange="handleCustomerChange()">
+                                <option value="">-- Select a Customer --</option>
+                            </select>
+                            <button class="btn btn-primary" onclick="openModal('customerModal')">+ New</button>
+                        </div>
+                    </section>
+
+                    <!-- Product Selection Section -->
+                    <section class="glass-panel section-card" id="productSection"
+                        style="opacity: 0.5; pointer-events: none;">
+                        <h2>2. Add Products</h2>
+                        <div class="input-group product-input-group">
+                            <select id="productSelect">
+                                <option value="">-- Select a Product --</option>
+                            </select>
+                            <div class="qty-add-row">
+                                <input type="number" id="productQuantity" min="1" value="1" placeholder="Qty">
+                                <button class="btn btn-primary" onclick="addProductToCart()">Add</button>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Right Column: Cart & Order Summary -->
+                <div class="right-col">
+                    <section class="glass-panel section-card cart-section">
+                        <h2>3. Order Summary</h2>
+
+                        <div class="cart-items-container">
+                            <table class="cart-table">
+                                <thead>
+                                    <tr>
+                                        <th>Item</th>
+                                        <th>Qty</th>
+                                        <th>Price</th>
+                                        <th>Total</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="cartBody">
+                                    <!-- Cart items will be injected here -->
+                                </tbody>
+                            </table>
+                            <div id="emptyCartMessage" class="empty-state">Cart is empty</div>
+                        </div>
+
+                        <div class="cart-footer">
+                            <div class="grand-total">
+                                <span>Grand Total:</span>
+                                <span id="grandTotalValue">₹0.00</span>
+                            </div>
+                            <button class="btn btn-success full-width" id="placeOrderBtn" onclick="placeOrder()"
+                                disabled>Place Order</button>
+                        </div>
+                    </section>
+                </div>
+
+            </main>
+
+            <!-- Bills View -->
+            <main class="view-page" id="billsView" style="display:none; height: 100%; padding-bottom: 20px;">
+                <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+                        <h2>Saved Bills</h2>
+                    </div>
+                    <div id="billsListContainer" style="flex: 1; overflow-y: auto;">
+                        <!-- Bills will be injected here -->
+                    </div>
+                </div>
+            </main>
+
+            <!-- History View -->
+            <main class="view-page" id="historyView" style="display:none; height: 100%; padding-bottom: 20px;">
+                <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+                        <h2>Payment History</h2>
+                    </div>
+                    <div id="paymentHistoryContainer" style="flex: 1; overflow-y: auto;">
+                        <!-- History injected here -->
+                    </div>
+                </div>
+            </main>
+
+            <!-- Customers View -->
+            <main class="view-page" id="customersView" style="display:none; height: 100%; padding-bottom: 20px;">
+                <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+                        <h2>Customers</h2>
+                        <button class="btn btn-primary" onclick="openModal('customerModal')">+ New Customer</button>
+                    </div>
+                    <div id="customersListContainer" style="flex: 1; overflow-y: auto;">
+                        <!-- Customers will be injected here -->
+                    </div>
+                </div>
+            </main>
+
+        </div>
+    </div>
+
+    <!-- Modals -->
+
+    <!-- New Customer Modal -->
+    <div id="customerModal" class="modal">
+        <div class="modal-content glass-panel">
+            <span class="close" onclick="closeModal('customerModal')">&times;</span>
+            <h2>Add New Customer</h2>
+            <form id="customerForm" onsubmit="saveCustomer(event)">
+                <div class="form-group">
+                    <label for="newCustomerName">Customer Name</label>
+                    <input type="text" id="newCustomerName" required placeholder="Enter name">
+                </div>
+                <div class="form-group">
+                    <label for="newCustomerPhone">Phone Number</label>
+                    <input type="tel" id="newCustomerPhone" placeholder="Optional">
+                </div>
+                <button type="submit" class="btn btn-primary full-width">Save Customer</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- New Product Modal -->
+    <div id="productModal" class="modal">
+        <div class="modal-content glass-panel">
+            <span class="close" onclick="closeModal('productModal')">&times;</span>
+            <h2>Add New Product</h2>
+            <form id="productForm" onsubmit="saveProduct(event)">
+                <div class="form-group">
+                    <label for="newProductName">Product Name</label>
+                    <input type="text" id="newProductName" required placeholder="Enter product name">
+                </div>
+                <div class="form-group">
+                    <label for="newProductPrice">Price (₹)</label>
+                    <input type="number" id="newProductPrice" required min="0" step="0.01" placeholder="0.00">
+                </div>
+                <button type="submit" class="btn btn-primary full-width">Save Product</button>
+            </form>
+
+            <hr class="modal-divider">
+            <h3>Existing Products</h3>
+            <ul id="existingProductsList" class="simple-list">
+                <!-- Existing products listed here -->
+            </ul>
+        </div>
+    </div>
+
+    <!-- Confirm Order & Share Modal -->
+    <div id="confirmOrderModal" class="modal">
+        <div class="modal-content glass-panel" style="text-align: center; transition: all 0.3s ease;">
+            <span class="close" onclick="closeModal('confirmOrderModal')">&times;</span>
+            <div style="font-size: 3rem; margin-bottom: 10px;">📦</div>
+            <h2 style="color: #0070f3; margin-bottom: 10px;">Ready to Place Order?</h2>
+            <p id="confirmCustomerName" style="margin-bottom: 5px; font-weight: 500; font-size: 1.1rem;"></p>
+            <p id="confirmGrandTotal"
+                style="margin-bottom: 20px; font-size: 1.4rem; font-weight: bold; color: #28a745;"></p>
+
+            <p style="color: #666; font-size: 0.9rem; margin-bottom: 20px;">Clicking below will save the bill to your
+                records and immediately open the share menu.</p>
+
+            <div
+                style="background: rgba(0, 112, 243, 0.05); padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left;">
+                <h3 style="font-size: 1rem; margin-bottom: 10px; color: #333;">Record Payment Received</h3>
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label for="advancePaymentAmount" style="font-size: 0.9rem;">Amount (₹)</label>
+                    <input type="number" id="advancePaymentAmount" min="0" step="0.01" placeholder="0.00"
+                        oninput="updateConfirmTotal()">
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label for="advancePaymentMode" style="font-size: 0.9rem;">Mode</label>
+                    <select id="advancePaymentMode">
+                        <option value="Cash">Cash</option>
+                        <option value="UPI" selected>UPI</option>
+                        <option value="Bank Transfer">Bank Transfer</option>
+                        <option value="Card">Card</option>
+                    </select>
+                </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
+                <button class="btn btn-primary" id="saveAndShareBtn" onclick="finalizeOrderAndShare()"
+                    style="background: linear-gradient(135deg, #0070f3, #00c6ff); color: white; font-size: 1.1rem; padding: 12px; border: none; box-shadow: 0 4px 15px rgba(0, 112, 243, 0.4); transition: transform 0.2s;">✨
+                    Save & Share Bill</button>
+                <button class="btn btn-secondary" onclick="closeModal('confirmOrderModal')"
+                    style="border: none; background: transparent; color: #666; text-decoration: underline;">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bills Modal (Removed - Now a View) -->
+
+    <!-- Record Payment Modal -->
+    <div id="paymentModal" class="modal">
+        <div class="modal-content glass-panel">
+            <span class="close" onclick="closeModal('paymentModal')">&times;</span>
+            <h2>Record Payment</h2>
+            <form id="paymentForm" onsubmit="savePayment(event)">
+                <div class="form-group" id="paymentCustomerGroup">
+                    <label for="paymentCustomerSelect">Customer</label>
+                    <select id="paymentCustomerSelect" required onchange="handlePaymentCustomerChange()">
+                        <option value="">-- Select Customer --</option>
+                    </select>
+                </div>
+                <div class="form-group" id="paymentBillGroup" style="display:none;">
+                    <label>Applying to Bill ID</label>
+                    <input type="text" id="paymentBillId" readonly disabled style="opacity:0.7;">
+                </div>
+                <div class="form-group">
+                    <label for="paymentAmount">Amount (₹)</label>
+                    <input type="number" id="paymentAmount" required min="1" step="0.01" placeholder="Enter amount">
+                </div>
+                <div class="form-group">
+                    <label for="paymentMode">Mode of Payment</label>
+                    <select id="paymentMode" required>
+                        <option value="Cash">Cash</option>
+                        <option value="UPI">UPI</option>
+                        <option value="Bank Transfer">Bank Transfer</option>
+                        <option value="Card">Card</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary full-width">Save Payment</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Payment History Modal (Removed - Now a View) -->
+
+    <!-- Mobile Bottom Navigation -->
+    <nav class="mobile-nav glass-panel">
+        <button class="mobile-nav-btn active" onclick="switchView('homeView')">
+            <span class="nav-icon">🏠</span>
+            <span class="nav-label">Home</span>
+        </button>
+        <button class="mobile-nav-btn" onclick="switchView('mainView')">
+            <span class="nav-icon">➕</span>
+            <span class="nav-label">New Order</span>
+        </button>
+        <button class="mobile-nav-btn" onclick="switchView('billsView')">
+            <span class="nav-icon">📁</span>
+            <span class="nav-label">Bills</span>
+        </button>
+        <button class="mobile-nav-btn" onclick="openPaymentModal()">
+            <span class="nav-icon">💰</span>
+            <span class="nav-label">Record Payment</span>
+        </button>
+    </nav>
+
+    <script src="app.js?v=12"></script>
+</body>
+
+</html>
