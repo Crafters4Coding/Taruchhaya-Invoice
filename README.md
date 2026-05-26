@@ -14,4 +14,4 @@ A beautiful, simple, offline-first invoice and inventory management system desig
 
 1. Clone the repository.
 2. Open `index.html` (or `login.html`) directly in your web browser, or serve it via a local development server (e.g., `npx serve .` or `python -m http.server`).
-3. **Login credentials:** `Supratik` / `723151`
+
