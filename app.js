@@ -178,9 +178,11 @@ function saveProduct(e) {
     e.preventDefault();
     const nameInput = document.getElementById('newProductName');
     const priceInput = document.getElementById('newProductPrice');
+    const unitInput = document.getElementById('newProductUnit');
 
     const name = nameInput.value.trim();
     const price = parseFloat(priceInput.value);
+    const unit = unitInput ? unitInput.value : 'pcs';
 
     if (!name || isNaN(price) || price < 0) {
         alert('Please enter a valid product name and price.');
@@ -190,7 +192,8 @@ function saveProduct(e) {
     const newProduct = {
         id: 'prod_' + Date.now(),
         name: name,
-        price: price
+        price: price,
+        unit: unit
     };
 
     products.push(newProduct);
@@ -201,6 +204,7 @@ function saveProduct(e) {
 
     nameInput.value = '';
     priceInput.value = '';
+    if (unitInput) unitInput.value = 'pcs';
     // Don't close modal — allow adding multiple products
 }
 
@@ -228,7 +232,8 @@ function renderProductSelect() {
     sortedProducts.forEach(prod => {
         const option = document.createElement('option');
         option.value = prod.id;
-        option.textContent = `${prod.name} — ₹${prod.price.toFixed(2)}`;
+        const unitDisplay = prod.unit ? ` / ${prod.unit}` : '';
+        option.textContent = `${prod.name} — ₹${prod.price.toFixed(2)}${unitDisplay}`;
         select.appendChild(option);
     });
 }
@@ -246,10 +251,11 @@ function renderExistingProductsList() {
 
     sorted.forEach(prod => {
         const li = document.createElement('li');
+        const unitDisplay = prod.unit ? `<span style="font-size:0.8rem; color:var(--text-secondary); margin-left:4px;">/${prod.unit}</span>` : '';
         li.innerHTML = `
             <span>${prod.name}</span>
             <span style="display:flex; align-items:center; gap:12px;">
-                <span style="color: var(--success-color); font-weight:600;">₹${prod.price.toFixed(2)}</span>
+                <span style="color: var(--success-color); font-weight:600;">₹${prod.price.toFixed(2)}${unitDisplay}</span>
                 <button class="btn btn-danger" onclick="deleteProduct('${prod.id}')" title="Delete product" style="padding:2px 6px; font-size:0.8rem;">✕</button>
             </span>
         `;
@@ -296,7 +302,8 @@ function addProductToCart() {
             productId: product.id,
             name: product.name,
             price: product.price,
-            quantity: quantity
+            quantity: quantity,
+            unit: product.unit || 'pcs'
         });
     }
 
@@ -365,10 +372,13 @@ function renderCart() {
         tr.innerHTML = `
             <td style="padding-right: 10px;">${item.name}</td>
             <td style="padding-right: 10px;">
-                <input type="number" min="1" value="${item.quantity}"
-                    style="width:55px; padding:4px; font-size:0.9rem; text-align: center; border: 1px solid var(--panel-border); border-radius: 4px;"
-                    onchange="updateCartQuantity('${item.productId}', this.value)"
-                    onblur="updateCartQuantity('${item.productId}', this.value)">
+                <div style="display: flex; align-items: center; gap: 4px;">
+                    <input type="number" min="1" value="${item.quantity}"
+                        style="width:55px; padding:4px; font-size:0.9rem; text-align: center; border: 1px solid var(--panel-border); border-radius: 4px;"
+                        onchange="updateCartQuantity('${item.productId}', this.value)"
+                        onblur="updateCartQuantity('${item.productId}', this.value)">
+                    <span style="font-size: 0.75rem; color: var(--text-secondary);">${item.unit || 'pcs'}</span>
+                </div>
             </td>
             <td style="padding-right: 10px;">
                 <div style="display: flex; align-items: center; gap: 4px;">
