@@ -21,6 +21,348 @@ let cart = []; // Array of { productId, quantity, price, name }
 let editingCustomerId = null;
 let editingProductId = null;
 
+// --- Supabase Cloud Sync Logic ---
+// You can enter your credentials here to hardcode them, 
+// or set them dynamically from the "Cloud Settings" modal in the application.
+const SUPABASE_URL = "https://cofigoxqaltwdetcodug.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNvZmlnb3hxYWx0d2RldGNvZHVnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4ODI1NDMsImV4cCI6MjA5NTQ1ODU0M30.7ZXIY6e8MNlMQb08nDNOe69cSlTl8M6xlJOKw8_h3wE";
+
+let supabase = null;
+
+function initSupabase() {
+    const url = localStorage.getItem('taruchhaya_supabase_url') || SUPABASE_URL || '';
+    const key = localStorage.getItem('taruchhaya_supabase_key') || SUPABASE_KEY || '';
+
+    if (url && key) {
+        try {
+            if (window.supabase) {
+                supabase = window.supabase.createClient(url, key);
+                return true;
+            }
+        } catch (e) {
+            console.error('Supabase initialization failed:', e);
+        }
+    }
+    supabase = null;
+    return false;
+}
+
+function updateCloudStatus(status, errorMsg = '') {
+    const star = document.getElementById('cloudStatusStar');
+    const starMobile = document.getElementById('cloudStatusStarMobile');
+    const statusText = document.getElementById('cloudStatusText');
+
+    let color = '#ef4444'; // Red
+    let title = 'Not connected to cloud';
+
+    if (status === 'connected') {
+        color = '#10b981'; // Green
+        title = 'Connected to Supabase Cloud';
+    } else if (status === 'syncing') {
+        color = '#3b82f6'; // Blue
+        title = 'Syncing with Supabase...';
+    } else if (status === 'error') {
+        color = '#f59e0b'; // Yellow/Orange
+        title = 'Sync Error: ' + errorMsg;
+    }
+
+    if (star) {
+        star.style.color = color;
+        star.style.textShadow = `0 0 5px ${color}66`;
+        star.title = title;
+    }
+    if (starMobile) {
+        starMobile.style.color = color;
+        starMobile.style.textShadow = `0 0 5px ${color}66`;
+        starMobile.title = title;
+    }
+    if (statusText) {
+        statusText.textContent = title;
+        statusText.style.color = color;
+    }
+}
+
+async function loadCloudData() {
+    if (!initSupabase()) {
+        updateCloudStatus('disconnected');
+        return;
+    }
+
+    updateCloudStatus('syncing');
+
+    try {
+        const [resCust, resProd, resOrd, resPay] = await Promise.all([
+            supabase.from('customers').select('*'),
+            supabase.from('products').select('*'),
+            supabase.from('orders').select('*'),
+            supabase.from('payments').select('*')
+        ]);
+
+        if (resCust.error) throw resCust.error;
+        if (resProd.error) throw resProd.error;
+        if (resOrd.error) throw resOrd.error;
+        if (resPay.error) throw resPay.error;
+
+        const dbCust = resCust.data || [];
+        const dbProd = resProd.data || [];
+        const dbOrd = resOrd.data || [];
+        const dbPay = resPay.data || [];
+
+        // Check if DB is completely empty but local has data => Auto-migrate local to cloud
+        const localCust = JSON.parse(localStorage.getItem('taruchhaya_customers')) || [];
+        const localProd = JSON.parse(localStorage.getItem('taruchhaya_products')) || [];
+        const localOrd = JSON.parse(localStorage.getItem('taruchhaya_orders')) || [];
+        const localPay = JSON.parse(localStorage.getItem('taruchhaya_payments')) || [];
+
+        if (dbCust.length === 0 && dbProd.length === 0 && dbOrd.length === 0 && dbPay.length === 0 &&
+            (localCust.length > 0 || localProd.length > 0 || localOrd.length > 0 || localPay.length > 0)) {
+            
+            console.log('Database is empty. Migrating local data to Supabase...');
+            
+            if (localCust.length > 0) {
+                const mapCust = localCust.map(c => ({ id: c.id, name: c.name, phone: c.phone || '', created_at: c.createdAt || new Date().toISOString() }));
+                const { error } = await supabase.from('customers').insert(mapCust);
+                if (error) throw error;
+            }
+
+            if (localProd.length > 0) {
+                const mapProd = localProd.map(p => ({ id: p.id, name: p.name, price: p.price, unit: p.unit || 'pcs' }));
+                const { error } = await supabase.from('products').insert(mapProd);
+                if (error) throw error;
+            }
+
+            if (localOrd.length > 0) {
+                const mapOrd = localOrd.map(o => ({
+                    id: o.id,
+                    customer_id: o.customerId,
+                    customer_name: o.customerName || '',
+                    items: o.items || [],
+                    items_total: o.itemsTotal || 0,
+                    previous_due: o.previousDue || 0,
+                    additional_cost: o.additionalCost || 0,
+                    additional_cost_reason: o.additionalCostReason || '',
+                    total_amount: o.totalAmount || 0,
+                    paid_amount: o.paidAmount || 0,
+                    date: o.date || new Date().toISOString(),
+                    adjusted_with_order_id: o.adjustedWithOrderId || null
+                }));
+                const { error } = await supabase.from('orders').insert(mapOrd);
+                if (error) throw error;
+            }
+
+            if (localPay.length > 0) {
+                const mapPay = localPay.map(p => ({
+                    id: p.id,
+                    customer_id: p.customerId,
+                    customer_name: p.customerName || '',
+                    amount: p.amount || 0,
+                    mode: p.mode || 'Cash',
+                    date: p.date || new Date().toISOString()
+                }));
+                const { error } = await supabase.from('payments').insert(mapPay);
+                if (error) throw error;
+            }
+
+            alert('Local data migrated to Supabase cloud successfully!');
+            updateCloudStatus('connected');
+            return;
+        }
+
+        // If cloud database has data, it becomes the source of truth
+        customers = dbCust.map(r => ({
+            id: r.id,
+            name: r.name,
+            phone: r.phone || '',
+            createdAt: r.created_at
+        }));
+
+        products = dbProd.map(r => ({
+            id: r.id,
+            name: r.name,
+            price: parseFloat(r.price),
+            unit: r.unit || 'pcs'
+        }));
+
+        orders = dbOrd.map(r => ({
+            id: r.id,
+            customerId: r.customer_id,
+            customerName: r.customer_name || '',
+            items: r.items || [],
+            itemsTotal: parseFloat(r.items_total || 0),
+            previousDue: parseFloat(r.previous_due || 0),
+            additionalCost: parseFloat(r.additional_cost || 0),
+            additionalCostReason: r.additional_cost_reason || '',
+            totalAmount: parseFloat(r.total_amount || 0),
+            paidAmount: parseFloat(r.paid_amount || 0),
+            date: r.date,
+            adjustedWithOrderId: r.adjusted_with_order_id || null
+        }));
+
+        paymentHistory = dbPay.map(r => ({
+            id: r.id,
+            customerId: r.customer_id,
+            customerName: r.customer_name || '',
+            amount: parseFloat(r.amount || 0),
+            mode: r.mode || 'Cash',
+            date: r.date
+        }));
+
+        // Remove mock data if it exists
+        customers = customers.filter(c => c.id !== 'cust_1' && c.id !== 'cust_2');
+        products = products.filter(p => p.id !== 'prod_1' && p.id !== 'prod_2' && p.id !== 'prod_3');
+
+        // Cache back to local storage
+        localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
+        localStorage.setItem('taruchhaya_products', JSON.stringify(products));
+        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
+        localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
+
+        // Re-render UI
+        renderCustomerSelect();
+        renderProductSelect();
+        renderExistingProductsList();
+        renderBills();
+        renderCart();
+        
+        if (typeof renderCustomersList === 'function') renderCustomersList();
+        
+        const homeView = document.getElementById('homeView');
+        if (homeView && homeView.style.display !== 'none') {
+            renderHomeDashboard();
+        }
+
+        const historyView = document.getElementById('historyView');
+        if (historyView && historyView.style.display !== 'none') {
+            renderPaymentHistory();
+        }
+
+        updateCloudStatus('connected');
+    } catch (err) {
+        console.error('Failed to load Supabase cloud data:', err);
+        updateCloudStatus('error', err.message || 'Check connection/credentials');
+    }
+}
+
+async function cloudUpsertCustomer(customer) {
+    if (!supabase) return;
+    try {
+        const { error } = await supabase.from('customers').upsert({
+            id: customer.id,
+            name: customer.name,
+            phone: customer.phone || '',
+            created_at: customer.createdAt || new Date().toISOString()
+        });
+        if (error) throw error;
+        updateCloudStatus('connected');
+    } catch (err) {
+        console.error('Cloud save failed for customer:', err);
+        updateCloudStatus('error', 'Failed to save customer to cloud: ' + err.message);
+    }
+}
+
+async function cloudUpsertProduct(product) {
+    if (!supabase) return;
+    try {
+        const { error } = await supabase.from('products').upsert({
+            id: product.id,
+            name: product.name,
+            price: product.price,
+            unit: product.unit || 'pcs'
+        });
+        if (error) throw error;
+        updateCloudStatus('connected');
+    } catch (err) {
+        console.error('Cloud save failed for product:', err);
+        updateCloudStatus('error', 'Failed to save product to cloud: ' + err.message);
+    }
+}
+
+async function cloudDeleteProduct(productId) {
+    if (!supabase) return;
+    try {
+        const { error } = await supabase.from('products').delete().eq('id', productId);
+        if (error) throw error;
+        updateCloudStatus('connected');
+    } catch (err) {
+        console.error('Cloud delete failed for product:', err);
+        updateCloudStatus('error', 'Failed to delete product from cloud: ' + err.message);
+    }
+}
+
+async function cloudUpsertOrder(order) {
+    if (!supabase) return;
+    try {
+        const { error } = await supabase.from('orders').upsert({
+            id: order.id,
+            customer_id: order.customerId,
+            customer_name: order.customerName || '',
+            items: order.items || [],
+            items_total: order.itemsTotal || 0,
+            previous_due: order.previousDue || 0,
+            additional_cost: order.additionalCost || 0,
+            additional_cost_reason: order.additionalCostReason || '',
+            total_amount: order.totalAmount || 0,
+            paid_amount: order.paidAmount || 0,
+            date: order.date || new Date().toISOString(),
+            adjusted_with_order_id: order.adjustedWithOrderId || null
+        });
+        if (error) throw error;
+        updateCloudStatus('connected');
+    } catch (err) {
+        console.error('Cloud save failed for order:', err);
+        updateCloudStatus('error', 'Failed to save order to cloud: ' + err.message);
+    }
+}
+
+async function cloudInsertPayment(payment) {
+    if (!supabase) return;
+    try {
+        const { error } = await supabase.from('payments').insert({
+            id: payment.id,
+            customer_id: payment.customerId,
+            customer_name: payment.customerName || '',
+            amount: payment.amount || 0,
+            mode: payment.mode || 'Cash',
+            date: payment.date || new Date().toISOString()
+        });
+        if (error) throw error;
+        updateCloudStatus('connected');
+    } catch (err) {
+        console.error('Cloud save failed for payment:', err);
+        updateCloudStatus('error', 'Failed to save payment to cloud: ' + err.message);
+    }
+}
+
+async function saveCloudSettings(e) {
+    e.preventDefault();
+    const url = document.getElementById('cloudSupabaseUrl').value.trim();
+    const key = document.getElementById('cloudSupabaseKey').value.trim();
+
+    if (!url || !key) {
+        alert('Please enter both Supabase URL and Anon Key.');
+        return;
+    }
+
+    localStorage.setItem('taruchhaya_supabase_url', url);
+    localStorage.setItem('taruchhaya_supabase_key', key);
+
+    alert('Cloud credentials saved! Attempting to connect and sync data...');
+    closeModal('cloudModal');
+
+    await loadCloudData();
+}
+
+function disconnectCloud() {
+    if (confirm('Are you sure you want to disconnect from Supabase? Your data will remain stored locally in your browser.')) {
+        localStorage.removeItem('taruchhaya_supabase_url');
+        localStorage.removeItem('taruchhaya_supabase_key');
+        supabase = null;
+        updateCloudStatus('disconnected');
+        closeModal('cloudModal');
+        alert('Disconnected from Supabase Cloud. The app will now run locally.');
+    }
+}
+
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
     // No mock data injection. Data is completely managed by the user locally.
@@ -47,11 +389,18 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mobileDateElem) mobileDateElem.textContent = formattedDate;
 
     switchView('homeView');
+    
+    // Load cloud data asynchronously
+    loadCloudData();
 });
 
 // --- Modal Logic ---
 function openModal(modalId) {
     document.getElementById(modalId).style.display = 'flex';
+    if (modalId === 'cloudModal') {
+        document.getElementById('cloudSupabaseUrl').value = localStorage.getItem('taruchhaya_supabase_url') || '';
+        document.getElementById('cloudSupabaseKey').value = localStorage.getItem('taruchhaya_supabase_key') || '';
+    }
 }
 
 function closeModal(modalId) {
@@ -112,6 +461,8 @@ function saveCustomer(e) {
         if (customer) {
             customer.name = name;
             customer.phone = phoneInput.value.trim();
+            // Sync edited customer to cloud
+            cloudUpsertCustomer(customer);
         }
     } else {
         const newCustomer = {
@@ -121,6 +472,8 @@ function saveCustomer(e) {
             createdAt: new Date().toISOString()
         };
         customers.push(newCustomer);
+        // Sync new customer to cloud
+        cloudUpsertCustomer(newCustomer);
         setTimeout(() => {
             document.getElementById('customerSelect').value = newCustomer.id;
             handleCustomerChange();
@@ -263,6 +616,8 @@ function saveProduct(e) {
             product.name = name;
             product.price = price;
             product.unit = unit;
+            // Sync edited product to cloud
+            cloudUpsertProduct(product);
         }
         editingProductId = null;
         const title = document.querySelector('#productModal h2');
@@ -277,6 +632,8 @@ function saveProduct(e) {
             unit: unit
         };
         products.push(newProduct);
+        // Sync new product to cloud
+        cloudUpsertProduct(newProduct);
     }
 
     localStorage.setItem('taruchhaya_products', JSON.stringify(products));
@@ -300,6 +657,8 @@ function deleteProduct(productId) {
 
     products = products.filter(p => p.id !== productId);
     localStorage.setItem('taruchhaya_products', JSON.stringify(products));
+    // Sync delete to cloud
+    cloudDeleteProduct(productId);
 
     renderProductSelect();
     renderExistingProductsList();
@@ -622,6 +981,8 @@ async function finalizeOrderAndShare() {
             previousDue += pending;
             order.paidAmount = order.totalAmount; // Mark as paid/adjusted
             order.adjustedWithOrderId = newOrderId;
+            // Sync adjusted order to cloud
+            cloudUpsertOrder(order);
         }
     });
 
@@ -664,6 +1025,8 @@ async function finalizeOrderAndShare() {
     // Save to orders & localStorage
     orders.push(newOrder);
     localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
+    // Sync new order to cloud
+    cloudUpsertOrder(newOrder);
 
     // If advance payment > 0, log it in payment history
     if (advanceAmount > 0) {
@@ -677,6 +1040,8 @@ async function finalizeOrderAndShare() {
         };
         paymentHistory.push(historyRecord);
         localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
+        // Sync payment history to cloud
+        cloudInsertPayment(historyRecord);
     }
 
     // Build shareable bill text
@@ -920,6 +1285,8 @@ function savePayment(e) {
         const order = orders.find(o => o.id === orderId);
         if (order) {
             order.paidAmount = (order.paidAmount || 0) + amount;
+            // Sync updated order to cloud
+            cloudUpsertOrder(order);
         }
     } else {
         if (!customerId) {
@@ -936,6 +1303,8 @@ function savePayment(e) {
                 const pay = Math.min(pending, remaining);
                 order.paidAmount = (order.paidAmount || 0) + pay;
                 remaining -= pay;
+                // Sync updated order to cloud
+                cloudUpsertOrder(order);
             }
         }
 
@@ -955,6 +1324,8 @@ function savePayment(e) {
     };
     paymentHistory.push(historyRecord);
     localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
+    // Sync payment history to cloud
+    cloudInsertPayment(historyRecord);
 
     localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
     closeModal('paymentModal');
