@@ -179,6 +179,13 @@ body {
     .sidebar {
         display: none !important;
     }
+    .app-layout {
+        align-items: stretch;
+        width: 100%;
+    }
+    .app-container {
+        width: 100%;
+    }
     .mobile-header {
         display: flex;
     }
@@ -204,15 +211,22 @@ body {
     /* Customer row layout */
     .customer-input-group {
         display: flex;
-        flex-direction: row !important;
-        align-items: center;
-        gap: 0.5rem;
+        flex-direction: column !important;
+        align-items: stretch;
+        gap: 0.75rem;
+        width: 100%;
     }
-    .customer-input-group select {
+    .customer-select-row {
+        display: flex;
+        flex-direction: row;
+        width: 100%;
+        gap: 10px;
+    }
+    .customer-select-row select {
         flex: 1;
         width: auto !important;
     }
-    .customer-input-group button {
+    .customer-select-row button {
         width: auto !important;
         flex-shrink: 0;
         white-space: nowrap;
@@ -222,9 +236,18 @@ body {
     /* Product row layout */
     .product-input-group {
         display: flex;
-        flex-direction: column;
+        flex-direction: column !important;
         gap: 0.75rem;
         width: 100%;
+    }
+    .product-select-row {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        gap: 10px;
+    }
+    .product-select-row select {
+        width: 100% !important;
     }
     .qty-add-row {
         display: flex;
@@ -341,6 +364,9 @@ body {
     .mobile-header {
         margin-bottom: 0.75rem;
         padding: 0.6rem 0.8rem;
+    }
+    .crafted-by-credit-mobile {
+        display: none !important;
     }
     .bill-card-header {
         flex-direction: column;
