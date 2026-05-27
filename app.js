@@ -27,7 +27,7 @@ let editingProductId = null;
 const SUPABASE_URL = "https://cofigoxqaltwdetcodug.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNvZmlnb3hxYWx0d2RldGNvZHVnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4ODI1NDMsImV4cCI6MjA5NTQ1ODU0M30.7ZXIY6e8MNlMQb08nDNOe69cSlTl8M6xlJOKw8_h3wE";
 
-let supabase = null;
+let supabaseClient = null;
 
 function initSupabase() {
     const url = localStorage.getItem('taruchhaya_supabase_url') || SUPABASE_URL || '';
@@ -36,14 +36,14 @@ function initSupabase() {
     if (url && key) {
         try {
             if (window.supabase) {
-                supabase = window.supabase.createClient(url, key);
+                supabaseClient = window.supabase.createClient(url, key);
                 return true;
             }
         } catch (e) {
             console.error('Supabase initialization failed:', e);
         }
     }
-    supabase = null;
+    supabaseClient = null;
     return false;
 }
 
@@ -92,10 +92,10 @@ async function loadCloudData() {
 
     try {
         const [resCust, resProd, resOrd, resPay] = await Promise.all([
-            supabase.from('customers').select('*'),
-            supabase.from('products').select('*'),
-            supabase.from('orders').select('*'),
-            supabase.from('payments').select('*')
+            supabaseClient.from('customers').select('*'),
+            supabaseClient.from('products').select('*'),
+            supabaseClient.from('orders').select('*'),
+            supabaseClient.from('payments').select('*')
         ]);
 
         if (resCust.error) throw resCust.error;
@@ -121,13 +121,13 @@ async function loadCloudData() {
             
             if (localCust.length > 0) {
                 const mapCust = localCust.map(c => ({ id: c.id, name: c.name, phone: c.phone || '', created_at: c.createdAt || new Date().toISOString() }));
-                const { error } = await supabase.from('customers').insert(mapCust);
+                const { error } = await supabaseClient.from('customers').insert(mapCust);
                 if (error) throw error;
             }
 
             if (localProd.length > 0) {
                 const mapProd = localProd.map(p => ({ id: p.id, name: p.name, price: p.price, unit: p.unit || 'pcs' }));
-                const { error } = await supabase.from('products').insert(mapProd);
+                const { error } = await supabaseClient.from('products').insert(mapProd);
                 if (error) throw error;
             }
 
@@ -146,7 +146,7 @@ async function loadCloudData() {
                     date: o.date || new Date().toISOString(),
                     adjusted_with_order_id: o.adjustedWithOrderId || null
                 }));
-                const { error } = await supabase.from('orders').insert(mapOrd);
+                const { error } = await supabaseClient.from('orders').insert(mapOrd);
                 if (error) throw error;
             }
 
@@ -159,7 +159,7 @@ async function loadCloudData() {
                     mode: p.mode || 'Cash',
                     date: p.date || new Date().toISOString()
                 }));
-                const { error } = await supabase.from('payments').insert(mapPay);
+                const { error } = await supabaseClient.from('payments').insert(mapPay);
                 if (error) throw error;
             }
 
@@ -244,9 +244,9 @@ async function loadCloudData() {
 }
 
 async function cloudUpsertCustomer(customer) {
-    if (!supabase) return;
+    if (!supabaseClient) return;
     try {
-        const { error } = await supabase.from('customers').upsert({
+        const { error } = await supabaseClient.from('customers').upsert({
             id: customer.id,
             name: customer.name,
             phone: customer.phone || '',
@@ -261,9 +261,9 @@ async function cloudUpsertCustomer(customer) {
 }
 
 async function cloudUpsertProduct(product) {
-    if (!supabase) return;
+    if (!supabaseClient) return;
     try {
-        const { error } = await supabase.from('products').upsert({
+        const { error } = await supabaseClient.from('products').upsert({
             id: product.id,
             name: product.name,
             price: product.price,
@@ -278,9 +278,9 @@ async function cloudUpsertProduct(product) {
 }
 
 async function cloudDeleteProduct(productId) {
-    if (!supabase) return;
+    if (!supabaseClient) return;
     try {
-        const { error } = await supabase.from('products').delete().eq('id', productId);
+        const { error } = await supabaseClient.from('products').delete().eq('id', productId);
         if (error) throw error;
         updateCloudStatus('connected');
     } catch (err) {
@@ -290,9 +290,9 @@ async function cloudDeleteProduct(productId) {
 }
 
 async function cloudUpsertOrder(order) {
-    if (!supabase) return;
+    if (!supabaseClient) return;
     try {
-        const { error } = await supabase.from('orders').upsert({
+        const { error } = await supabaseClient.from('orders').upsert({
             id: order.id,
             customer_id: order.customerId,
             customer_name: order.customerName || '',
@@ -315,9 +315,9 @@ async function cloudUpsertOrder(order) {
 }
 
 async function cloudInsertPayment(payment) {
-    if (!supabase) return;
+    if (!supabaseClient) return;
     try {
-        const { error } = await supabase.from('payments').insert({
+        const { error } = await supabaseClient.from('payments').insert({
             id: payment.id,
             customer_id: payment.customerId,
             customer_name: payment.customerName || '',
@@ -356,7 +356,7 @@ function disconnectCloud() {
     if (confirm('Are you sure you want to disconnect from Supabase? Your data will remain stored locally in your browser.')) {
         localStorage.removeItem('taruchhaya_supabase_url');
         localStorage.removeItem('taruchhaya_supabase_key');
-        supabase = null;
+        supabaseClient = null;
         updateCloudStatus('disconnected');
         closeModal('cloudModal');
         alert('Disconnected from Supabase Cloud. The app will now run locally.');
