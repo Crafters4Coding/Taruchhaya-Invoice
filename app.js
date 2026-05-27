@@ -237,6 +237,7 @@ async function loadCloudData() {
         }
 
         updateCloudStatus('connected');
+        alert('Connected to Cloud');
     } catch (err) {
         console.error('Failed to load Supabase cloud data:', err);
         updateCloudStatus('error', err.message || 'Check connection/credentials');
@@ -333,35 +334,6 @@ async function cloudInsertPayment(payment) {
     }
 }
 
-async function saveCloudSettings(e) {
-    e.preventDefault();
-    const url = document.getElementById('cloudSupabaseUrl').value.trim();
-    const key = document.getElementById('cloudSupabaseKey').value.trim();
-
-    if (!url || !key) {
-        alert('Please enter both Supabase URL and Anon Key.');
-        return;
-    }
-
-    localStorage.setItem('taruchhaya_supabase_url', url);
-    localStorage.setItem('taruchhaya_supabase_key', key);
-
-    alert('Cloud credentials saved! Attempting to connect and sync data...');
-    closeModal('cloudModal');
-
-    await loadCloudData();
-}
-
-function disconnectCloud() {
-    if (confirm('Are you sure you want to disconnect from Supabase? Your data will remain stored locally in your browser.')) {
-        localStorage.removeItem('taruchhaya_supabase_url');
-        localStorage.removeItem('taruchhaya_supabase_key');
-        supabaseClient = null;
-        updateCloudStatus('disconnected');
-        closeModal('cloudModal');
-        alert('Disconnected from Supabase Cloud. The app will now run locally.');
-    }
-}
 
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
@@ -397,10 +369,6 @@ document.addEventListener('DOMContentLoaded', () => {
 // --- Modal Logic ---
 function openModal(modalId) {
     document.getElementById(modalId).style.display = 'flex';
-    if (modalId === 'cloudModal') {
-        document.getElementById('cloudSupabaseUrl').value = localStorage.getItem('taruchhaya_supabase_url') || '';
-        document.getElementById('cloudSupabaseKey').value = localStorage.getItem('taruchhaya_supabase_key') || '';
-    }
 }
 
 function closeModal(modalId) {
