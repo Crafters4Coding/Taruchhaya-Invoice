@@ -1,7 +1,7 @@
 // --- Authentication Check ---
-// if (localStorage.getItem('taruchhaya_loggedIn') !== 'true') {
-//     window.location.href = 'login.html';
-// }
+if (localStorage.getItem('taruchhaya_loggedIn') !== 'true') {
+    window.location.href = 'login.html';
+}
 
 // --- State ---
 let customers = JSON.parse(localStorage.getItem('taruchhaya_customers')) || [];
