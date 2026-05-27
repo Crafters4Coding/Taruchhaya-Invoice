@@ -92,12 +92,12 @@
 </div>
 
 <script>
-    if (localStorage.getItem('taruchhaya_loggedIn') === 'true') {
+    if (sessionStorage.getItem('taruchhaya_loggedIn') === 'true') {
         window.location.href = 'index.html';
     }
 
     function doLogin() {
-        localStorage.setItem('taruchhaya_loggedIn', 'true');
+        sessionStorage.setItem('taruchhaya_loggedIn', 'true');
         document.getElementById('errorMsg').style.display = 'none';
         document.getElementById('successMsg').style.display = 'block';
         document.getElementById('loginBtn').style.opacity = '0.5';

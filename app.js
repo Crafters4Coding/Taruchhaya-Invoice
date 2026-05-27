@@ -1,5 +1,5 @@
 // --- Authentication Check ---
-if (localStorage.getItem('taruchhaya_loggedIn') !== 'true') {
+if (sessionStorage.getItem('taruchhaya_loggedIn') !== 'true') {
     window.location.href = 'login.html';
 }
 
@@ -1528,7 +1528,7 @@ function printInvoice(orderId) {
 
 // --- Logout ---
 function logout() {
-    localStorage.removeItem('taruchhaya_loggedIn');
+    sessionStorage.removeItem('taruchhaya_loggedIn');
     window.location.href = 'login.html';
 }
 
