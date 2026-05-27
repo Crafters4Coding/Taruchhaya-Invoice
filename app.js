@@ -1,5 +1,5 @@
 // --- Authentication Check ---
-if (sessionStorage.getItem('taruchhaya_loggedIn') !== 'true') {
+if (localStorage.getItem('taruchhaya_loggedIn') !== 'true') {
     window.location.href = 'login.html';
 }
 
@@ -116,9 +116,9 @@ async function loadCloudData() {
 
         if (dbCust.length === 0 && dbProd.length === 0 && dbOrd.length === 0 && dbPay.length === 0 &&
             (localCust.length > 0 || localProd.length > 0 || localOrd.length > 0 || localPay.length > 0)) {
-            
+
             console.log('Database is empty. Migrating local data to Supabase...');
-            
+
             if (localCust.length > 0) {
                 const mapCust = localCust.map(c => ({ id: c.id, name: c.name, phone: c.phone || '', created_at: c.createdAt || new Date().toISOString() }));
                 const { error } = await supabaseClient.from('customers').insert(mapCust);
@@ -223,9 +223,9 @@ async function loadCloudData() {
         renderExistingProductsList();
         renderBills();
         renderCart();
-        
+
         if (typeof renderCustomersList === 'function') renderCustomersList();
-        
+
         const homeView = document.getElementById('homeView');
         if (homeView && homeView.style.display !== 'none') {
             renderHomeDashboard();
@@ -237,11 +237,46 @@ async function loadCloudData() {
         }
 
         updateCloudStatus('connected');
-        showToast('Connected to Cloud');
+        
+        // --- Setup Realtime Subscriptions ---
+        if (!window.realtimeSubscribed) {
+            supabaseClient
+                .channel('schema-db-changes')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, payload => {
+                    handleRealtimeChange('customers', payload);
+                })
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, payload => {
+                    handleRealtimeChange('products', payload);
+                })
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, payload => {
+                    handleRealtimeChange('orders', payload);
+                })
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, payload => {
+                    handleRealtimeChange('payments', payload);
+                })
+                .subscribe();
+            window.realtimeSubscribed = true;
+        }
+
+        // We use a toast only if this is a manual refresh, or initial load, but skip it to not annoy the user on background syncs
+        if (!window.initialLoadDone) {
+            showToast('Connected to Cloud');
+            window.initialLoadDone = true;
+        }
     } catch (err) {
         console.error('Failed to load Supabase cloud data:', err);
         updateCloudStatus('error', err.message || 'Check connection/credentials');
     }
+}
+
+// --- Realtime Change Handler ---
+let realtimeTimeout = null;
+function handleRealtimeChange(table, payload) {
+    // Debounce to prevent multiple rapid fetches
+    if (realtimeTimeout) clearTimeout(realtimeTimeout);
+    realtimeTimeout = setTimeout(() => {
+        loadCloudData();
+    }, 500);
 }
 
 async function cloudUpsertCustomer(customer) {
@@ -356,16 +391,16 @@ document.addEventListener('DOMContentLoaded', () => {
     renderExistingProductsList();
     renderBills();
     renderCart(); // Ensure empty state is shown on load
-    
+
     // Set everyday's date in sidebar and mobile header
     const today = new Date();
-    const formattedDate = today.toLocaleDateString('en-US', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
+    const formattedDate = today.toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
     });
-    
+
     const dateElem = document.getElementById('sidebarDate');
     if (dateElem) dateElem.textContent = formattedDate;
 
@@ -373,7 +408,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mobileDateElem) mobileDateElem.textContent = formattedDate;
 
     switchView('homeView');
-    
+
     // Load cloud data asynchronously
     loadCloudData();
 });
@@ -472,36 +507,36 @@ function saveCustomer(e) {
 function deleteCustomer(id) {
     const customer = customers.find(c => c.id === id);
     if (!customer) return;
-    
+
     showCustomConfirm(`Are you sure you want to delete ${customer.name}?`).then(confirmed => {
         if (!confirmed) return;
 
-    customers = customers.filter(c => c.id !== id);
-    localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
-    
-    // Sync delete to cloud
-    if (typeof cloudDeleteCustomer === 'function') {
-        cloudDeleteCustomer(id);
-    }
+        customers = customers.filter(c => c.id !== id);
+        localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
 
-    // If currently selected customer is deleted, reset selection
-    if (currentCustomer && currentCustomer.id === id) {
-        currentCustomer = null;
-        const select = document.getElementById('customerSelect');
-        if (select) select.value = '';
-        const productSection = document.getElementById('productSection');
-        if (productSection) {
-            productSection.style.opacity = '0.5';
-            productSection.style.pointerEvents = 'none';
+        // Sync delete to cloud
+        if (typeof cloudDeleteCustomer === 'function') {
+            cloudDeleteCustomer(id);
         }
-        // Also clear cart just in case
-        cart = [];
-        if (typeof renderCart === 'function') renderCart();
-    }
 
-    if (typeof renderCustomerSelect === 'function') renderCustomerSelect();
-    if (typeof renderCustomersList === 'function') renderCustomersList();
-    showToast('Customer deleted successfully.', 'success');
+        // If currently selected customer is deleted, reset selection
+        if (currentCustomer && currentCustomer.id === id) {
+            currentCustomer = null;
+            const select = document.getElementById('customerSelect');
+            if (select) select.value = '';
+            const productSection = document.getElementById('productSection');
+            if (productSection) {
+                productSection.style.opacity = '0.5';
+                productSection.style.pointerEvents = 'none';
+            }
+            // Also clear cart just in case
+            cart = [];
+            if (typeof renderCart === 'function') renderCart();
+        }
+
+        if (typeof renderCustomerSelect === 'function') renderCustomerSelect();
+        if (typeof renderCustomersList === 'function') renderCustomersList();
+        showToast('Customer deleted successfully.', 'success');
     });
 }
 
@@ -511,7 +546,7 @@ function renderCustomerSelect(filterTerm = '') {
     select.innerHTML = '<option value="">-- Select a Customer --</option>';
 
     let sortedCustomers = [...customers].sort((a, b) => a.name.localeCompare(b.name));
-    
+
     if (filterTerm) {
         const term = filterTerm.toLowerCase();
         sortedCustomers = sortedCustomers.filter(c => c.name.toLowerCase().includes(term) || (c.phone && c.phone.includes(term)));
@@ -963,7 +998,7 @@ function updateConfirmTotal() {
     const originalHtml = confirmGrandTotal.dataset.originalHtml;
     const grandTotal = parseFloat(confirmGrandTotal.dataset.grandTotal || 0);
     const advance = parseFloat(document.getElementById('advancePaymentAmount').value || 0);
-    
+
     if (advance > 0) {
         const newBalance = grandTotal - advance;
         confirmGrandTotal.innerHTML = originalHtml + `<br><span style="font-size:1.1rem; color:#28a745;">- Payment Received: ₹${advance.toFixed(2)}</span><br><span style="color:#e00;">Final Balance: ₹${newBalance.toFixed(2)}</span>`;
@@ -1062,7 +1097,7 @@ async function finalizeOrderAndShare() {
 
     // Build shareable bill text
     const billText = buildBillText(currentCustomer.name, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason);
-    
+
     // Reset inputs
     if (additionalCostAmountInput) additionalCostAmountInput.value = '';
     if (additionalCostReasonInput) additionalCostReasonInput.value = '';
@@ -1131,11 +1166,11 @@ function buildBillText(customerName, items, grandTotal, previousDue = 0, advance
     }
 
     text += `Total           : ${grandTotal.toFixed(2).padStart(20)}\n`;
-    
+
     if (advanceAmount > 0) {
         text += `Payment Received: ${advanceAmount.toFixed(2).padStart(20)}\n`;
     }
-    
+
     const balanceDue = grandTotal - advanceAmount;
     text += "=================================================\n";
     text += `BALANCE DUE     : ₹ ${balanceDue.toFixed(2).padStart(18)}\n`;
@@ -1151,13 +1186,13 @@ function buildBillText(customerName, items, grandTotal, previousDue = 0, advance
 async function shareAsImage(text, title) {
     // Strip backticks from text for display
     const cleanText = text.replace(/```/g, '');
-    
+
     // Create an off-screen container
     const container = document.createElement('div');
     container.style.position = 'absolute';
     container.style.left = '-9999px';
     container.style.top = '-9999px';
-    
+
     // Style it exactly like the requested image but larger font
     const pre = document.createElement('pre');
     pre.textContent = cleanText;
@@ -1169,10 +1204,10 @@ async function shareAsImage(text, title) {
     pre.style.padding = '40px';
     pre.style.margin = '0';
     pre.style.lineHeight = '1.5';
-    
+
     container.appendChild(pre);
     document.body.appendChild(container);
-    
+
     try {
         if (!window.html2canvas) {
             throw new Error('html2canvas not loaded');
@@ -1181,11 +1216,11 @@ async function shareAsImage(text, title) {
             scale: 2, // high res
             backgroundColor: '#e6ffd9'
         });
-        
+
         canvas.toBlob(async (blob) => {
             if (!blob) throw new Error('Canvas to Blob failed');
             const file = new File([blob], 'invoice.png', { type: 'image/png' });
-            
+
             if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
                 await navigator.share({
                     title: title,
@@ -1197,13 +1232,13 @@ async function shareAsImage(text, title) {
                     const item = new ClipboardItem({ 'image/png': blob });
                     await navigator.clipboard.write([item]);
                     showToast('Image copied to clipboard! You can paste it into WhatsApp or other apps.');
-                } catch(err) {
+                } catch (err) {
                     console.error('Clipboard failed', err);
                     showToast('Could not copy image automatically. You can take a screenshot of the bill.');
                 }
             }
         });
-    } catch(err) {
+    } catch (err) {
         console.error('Image generation failed', err);
         showToast('Failed to generate image. Please make sure you are online to load the image generator script.');
     } finally {
@@ -1404,7 +1439,7 @@ function renderHomeDashboard() {
     let totalRevenue = 0;
     let totalOrders = orders.length;
     let totalCustomersCount = customers.length;
-    
+
     let totalUnpaid = 0;
     let currentAmount = 0;
     let overdueAmount = 0;
@@ -1427,14 +1462,14 @@ function renderHomeDashboard() {
     });
 
     document.getElementById('dashTotalRevenue').textContent = `₹${totalRevenue.toFixed(2)}`;
-    
+
     document.getElementById('dashTotalUnpaid').textContent = `₹${totalUnpaid.toFixed(2)}`;
     document.getElementById('dashCurrentAmount').textContent = `₹${currentAmount.toFixed(2)}`;
     document.getElementById('dashOverdueAmount').textContent = `₹${overdueAmount.toFixed(2)}`;
-    
+
     const curPercent = totalUnpaid > 0 ? (currentAmount / totalUnpaid) * 100 : 0;
     const overPercent = totalUnpaid > 0 ? (overdueAmount / totalUnpaid) * 100 : 0;
-    
+
     document.getElementById('dashCurrentBar').style.width = `${curPercent}%`;
     document.getElementById('dashOverdueBar').style.width = `${overPercent}%`;
 
@@ -1443,7 +1478,7 @@ function renderHomeDashboard() {
     let cashData = [];
     let openingBal = 0; // Mock opening balance based on total history minus 7 days
     let incoming = 0;
-    
+
     for (let i = 6; i >= 0; i--) {
         const d = new Date();
         d.setDate(d.getDate() - i);
@@ -1452,9 +1487,9 @@ function renderHomeDashboard() {
 
     const weekAgo = new Date();
     weekAgo.setDate(weekAgo.getDate() - 7);
-    
+
     let cumulativeCash = 0;
-    
+
     paymentHistory.forEach(pay => {
         const payDate = new Date(pay.date);
         if (payDate < weekAgo) {
@@ -1463,9 +1498,9 @@ function renderHomeDashboard() {
             incoming += pay.amount;
         }
     });
-    
+
     cumulativeCash = openingBal;
-    
+
     const paymentsByDate = {};
     paymentHistory.forEach(pay => {
         const payDate = new Date(pay.date);
@@ -1474,12 +1509,12 @@ function renderHomeDashboard() {
             paymentsByDate[dStr] = (paymentsByDate[dStr] || 0) + pay.amount;
         }
     });
-    
+
     dates.forEach(d => {
         cumulativeCash += (paymentsByDate[d] || 0);
         cashData.push(cumulativeCash);
     });
-    
+
     const closingBal = cumulativeCash;
 
     document.getElementById('dashOpeningBal').textContent = `₹${openingBal.toFixed(2)}`;
@@ -1489,12 +1524,12 @@ function renderHomeDashboard() {
     // Chart.js
     const ctx = document.getElementById('cashFlowChart');
     if (!ctx) return;
-    
+
     if (typeof window.Chart !== 'undefined') {
         if (cashFlowChartInstance) {
             cashFlowChartInstance.destroy();
         }
-        
+
         cashFlowChartInstance = new window.Chart(ctx, {
             type: 'line',
             data: {
@@ -1916,7 +1951,7 @@ function printInvoice(orderId) {
 
 // --- Logout ---
 function logout() {
-    sessionStorage.removeItem('taruchhaya_loggedIn');
+    localStorage.removeItem('taruchhaya_loggedIn');
     window.location.href = 'login.html';
 }
 
@@ -1936,7 +1971,7 @@ function closeMobileMenu(event) {
     if (event && event.target !== document.getElementById('mobileSideMenu') && event.target !== event.currentTarget) {
         return;
     }
-    
+
     const menu = document.getElementById('mobileSideMenu');
     const content = document.getElementById('mobileSideMenuContent');
     menu.style.opacity = '0';
@@ -1961,7 +1996,7 @@ function showToast(message, type = 'success') {
         `;
         document.head.appendChild(style);
     }
-    
+
     // Create container if not present
     let container = document.getElementById('toast-container');
     if (!container) {
@@ -1974,17 +2009,17 @@ function showToast(message, type = 'success') {
     // Create toast element
     const toast = document.createElement('div');
     toast.className = `toast-message ${type}`;
-    
+
     let icon = type === 'error' ? '⚠️' : '✅';
     toast.innerHTML = `<span class="toast-icon">${icon}</span> <span>${message}</span>`;
-    
+
     container.appendChild(toast);
-    
+
     // Trigger animation
     requestAnimationFrame(() => {
         toast.classList.add('show');
     });
-    
+
     // Remove after 3 seconds
     setTimeout(() => {
         toast.classList.remove('show');

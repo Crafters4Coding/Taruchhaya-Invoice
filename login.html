@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -17,19 +18,22 @@
             align-items: center;
             height: 100vh;
         }
+
         .login-box {
             background: white;
             padding: 2rem;
             border-radius: 12px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
             width: 100%;
             max-width: 350px;
             text-align: center;
         }
+
         h2 {
             margin-top: 0;
             color: #1e293b;
         }
+
         input {
             width: 100%;
             padding: 12px;
@@ -39,6 +43,7 @@
             box-sizing: border-box;
             font-size: 16px;
         }
+
         button {
             width: 100%;
             padding: 12px;
@@ -51,15 +56,18 @@
             cursor: pointer;
             margin-top: 10px;
         }
+
         button:hover {
             background: #1d4ed8;
         }
+
         .error {
             color: #ef4444;
             font-size: 14px;
             margin-top: 10px;
             display: none;
         }
+
         .success {
             color: #10b981;
             font-size: 14px;
@@ -69,79 +77,83 @@
         }
     </style>
 </head>
+
 <body>
 
-<div class="login-box">
-    <!-- App Name -->
-    <div style="margin-bottom: 15px;">
-        <h1 style="color: #2563eb; margin: 0; font-size: 1.8rem;">Taruchhaya Invoice</h1>
-        <div style="text-align: center; margin-top: 5px;">
-            <span style="font-size: 0.8rem; color: #64748b;">Crafted with passion by</span><br>
-            <span style="font-family: 'Dancing Script', cursive; font-size: 1.8rem; color: #1e293b; font-weight: 600; line-height: 1;">Swapnil Sarkar</span>
+    <div class="login-box">
+        <!-- App Name -->
+        <div style="margin-bottom: 15px;">
+            <h1 style="color: #2563eb; margin: 0; font-size: 1.8rem;">Taruchhaya Invoice</h1>
+            <div style="text-align: center; margin-top: 5px;">
+                <span style="font-size: 0.8rem; color: #64748b;">Crafted with passion by</span><br>
+                <span
+                    style="font-family: 'Dancing Script', cursive; font-size: 1.8rem; color: #1e293b; font-weight: 600; line-height: 1;">Swapnil
+                    Sarkar</span>
+            </div>
         </div>
+
+        <h2 style="font-size: 1.2rem; color: #475569; margin-bottom: 20px;">Welcome Back</h2>
+        <form id="loginForm">
+            <input type="email" id="email" placeholder="Email Address" required>
+            <input type="password" id="password" placeholder="Password" required>
+            <button type="submit" id="loginBtn">Sign In</button>
+            <div id="errorMsg" class="error">Invalid credentials</div>
+            <div id="successMsg" class="success">Login Successful! Redirecting...</div>
+        </form>
     </div>
-    
-    <h2 style="font-size: 1.2rem; color: #475569; margin-bottom: 20px;">Welcome Back</h2>
-    <form id="loginForm">
-        <input type="email" id="email" placeholder="Email Address" required>
-        <input type="password" id="password" placeholder="Password" required>
-        <button type="submit" id="loginBtn">Sign In</button>
-        <div id="errorMsg" class="error">Invalid credentials</div>
-        <div id="successMsg" class="success">Login Successful! Redirecting...</div>
-    </form>
-</div>
 
-<!-- Load Supabase JS -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Load Supabase JS -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-<script>
-    if (sessionStorage.getItem('taruchhaya_loggedIn') === 'true') {
-        window.location.href = 'index.html';
-    }
-
-    const SUPABASE_URL = "https://cofigoxqaltwdetcodug.supabase.co";
-    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNvZmlnb3hxYWx0d2RldGNvZHVnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4ODI1NDMsImV4cCI6MjA5NTQ1ODU0M30.7ZXIY6e8MNlMQb08nDNOe69cSlTl8M6xlJOKw8_h3wE";
-    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-    document.getElementById('loginForm').addEventListener('submit', async function(e) {
-        e.preventDefault();
-        const email = document.getElementById('email').value.trim();
-        const pass = document.getElementById('password').value.trim();
-
-        document.getElementById('errorMsg').style.display = 'none';
-        document.getElementById('loginBtn').style.opacity = '0.5';
-        document.getElementById('loginBtn').disabled = true;
-        document.getElementById('loginBtn').textContent = 'Authenticating...';
-
-        try {
-            // Authenticate with Supabase
-            const { data, error } = await supabaseClient.auth.signInWithPassword({
-                email: email,
-                password: pass
-            });
-
-            if (error) {
-                throw error;
-            }
-
-            // Success
-            sessionStorage.setItem('taruchhaya_loggedIn', 'true');
-            document.getElementById('successMsg').style.display = 'block';
-            document.getElementById('loginBtn').textContent = 'Success!';
-            
-            setTimeout(() => {
-                window.location.href = 'index.html';
-            }, 800);
-
-        } catch (err) {
-            document.getElementById('errorMsg').textContent = err.message || 'Invalid credentials';
-            document.getElementById('errorMsg').style.display = 'block';
-            document.getElementById('loginBtn').style.opacity = '1';
-            document.getElementById('loginBtn').disabled = false;
-            document.getElementById('loginBtn').textContent = 'Sign In';
+    <script>
+        if (localStorage.getItem('taruchhaya_loggedIn') === 'true') {
+            window.location.href = 'index.html';
         }
-    });
-</script>
+
+        const SUPABASE_URL = "https://cofigoxqaltwdetcodug.supabase.co";
+        const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNvZmlnb3hxYWx0d2RldGNvZHVnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4ODI1NDMsImV4cCI6MjA5NTQ1ODU0M30.7ZXIY6e8MNlMQb08nDNOe69cSlTl8M6xlJOKw8_h3wE";
+        const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        document.getElementById('loginForm').addEventListener('submit', async function (e) {
+            e.preventDefault();
+            const email = document.getElementById('email').value.trim();
+            const pass = document.getElementById('password').value.trim();
+
+            document.getElementById('errorMsg').style.display = 'none';
+            document.getElementById('loginBtn').style.opacity = '0.5';
+            document.getElementById('loginBtn').disabled = true;
+            document.getElementById('loginBtn').textContent = 'Authenticating...';
+
+            try {
+                // Authenticate with Supabase
+                const { data, error } = await supabaseClient.auth.signInWithPassword({
+                    email: email,
+                    password: pass
+                });
+
+                if (error) {
+                    throw error;
+                }
+
+                // Success
+                localStorage.setItem('taruchhaya_loggedIn', 'true');
+                document.getElementById('successMsg').style.display = 'block';
+                document.getElementById('loginBtn').textContent = 'Success!';
+
+                setTimeout(() => {
+                    window.location.href = 'index.html';
+                }, 800);
+
+            } catch (err) {
+                document.getElementById('errorMsg').textContent = err.message || 'Invalid credentials';
+                document.getElementById('errorMsg').style.display = 'block';
+                document.getElementById('loginBtn').style.opacity = '1';
+                document.getElementById('loginBtn').disabled = false;
+                document.getElementById('loginBtn').textContent = 'Sign In';
+            }
+        });
+    </script>
 
 </body>
+
 </html>
