@@ -163,7 +163,7 @@ async function loadCloudData() {
                 if (error) throw error;
             }
 
-            alert('Local data migrated to Supabase cloud successfully!');
+            showToast('Local data migrated to Supabase cloud successfully!');
             updateCloudStatus('connected');
             return;
         }
@@ -237,7 +237,7 @@ async function loadCloudData() {
         }
 
         updateCloudStatus('connected');
-        alert('Connected to Cloud');
+        showToast('Connected to Cloud');
     } catch (err) {
         console.error('Failed to load Supabase cloud data:', err);
         updateCloudStatus('error', err.message || 'Check connection/credentials');
@@ -258,6 +258,18 @@ async function cloudUpsertCustomer(customer) {
     } catch (err) {
         console.error('Cloud save failed for customer:', err);
         updateCloudStatus('error', 'Failed to save customer to cloud: ' + err.message);
+    }
+}
+
+async function cloudDeleteCustomer(customerId) {
+    if (!supabaseClient) return;
+    try {
+        const { error } = await supabaseClient.from('customers').delete().eq('id', customerId);
+        if (error) throw error;
+        updateCloudStatus('connected');
+    } catch (err) {
+        console.error('Cloud delete failed for customer:', err);
+        updateCloudStatus('error', 'Failed to delete customer from cloud: ' + err.message);
     }
 }
 
@@ -457,6 +469,40 @@ function saveCustomer(e) {
     closeModal('customerModal');
 }
 
+function deleteCustomer(id) {
+    const customer = customers.find(c => c.id === id);
+    if (!customer) return;
+    
+    if (!confirm(`Are you sure you want to delete ${customer.name}?`)) return;
+
+    customers = customers.filter(c => c.id !== id);
+    localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
+    
+    // Sync delete to cloud
+    if (typeof cloudDeleteCustomer === 'function') {
+        cloudDeleteCustomer(id);
+    }
+
+    // If currently selected customer is deleted, reset selection
+    if (currentCustomer && currentCustomer.id === id) {
+        currentCustomer = null;
+        const select = document.getElementById('customerSelect');
+        if (select) select.value = '';
+        const productSection = document.getElementById('productSection');
+        if (productSection) {
+            productSection.style.opacity = '0.5';
+            productSection.style.pointerEvents = 'none';
+        }
+        // Also clear cart just in case
+        cart = [];
+        if (typeof renderCart === 'function') renderCart();
+    }
+
+    if (typeof renderCustomerSelect === 'function') renderCustomerSelect();
+    if (typeof renderCustomersList === 'function') renderCustomersList();
+    showToast('Customer deleted successfully.', 'success');
+}
+
 function renderCustomerSelect(filterTerm = '') {
     const select = document.getElementById('customerSelect');
     const currentVal = select.value; // Preserve current selection if possible
@@ -574,7 +620,7 @@ function saveProduct(e) {
     const unit = unitInput ? unitInput.value : 'pcs';
 
     if (!name || isNaN(price) || price < 0) {
-        alert('Please enter a valid product name and price.');
+        showToast('Please enter a valid product name and price.');
         return;
     }
 
@@ -618,7 +664,7 @@ function saveProduct(e) {
 function deleteProduct(productId) {
     // Don't allow deleting if product is in the current cart
     if (cart.some(item => item.productId === productId)) {
-        alert('Cannot delete a product that is currently in the cart. Remove it from the cart first.');
+        showToast('Cannot delete a product that is currently in the cart. Remove it from the cart first.');
         return;
     }
     if (!confirm('Delete this product permanently?')) return;
@@ -699,7 +745,7 @@ function renderExistingProductsList() {
 // --- Cart & Order Logic ---
 function addProductToCart() {
     if (!currentCustomer) {
-        alert('Please select a customer first.');
+        showToast('Please select a customer first.');
         return;
     }
 
@@ -707,7 +753,7 @@ function addProductToCart() {
     const qtyInput = document.getElementById('productQuantity');
 
     if (!select.value) {
-        alert('Please select a product.');
+        showToast('Please select a product.');
         return;
     }
 
@@ -715,13 +761,13 @@ function addProductToCart() {
     const quantity = parseInt(qtyInput.value, 10);
 
     if (isNaN(quantity) || quantity <= 0) {
-        alert('Please enter a valid quantity (must be 1 or more).');
+        showToast('Please enter a valid quantity (must be 1 or more).');
         return;
     }
 
     const product = products.find(p => p.id === productId);
     if (!product) {
-        alert('Selected product not found. Please refresh and try again.');
+        showToast('Selected product not found. Please refresh and try again.');
         return;
     }
 
@@ -863,11 +909,11 @@ function renderCart() {
 // --- Place Order ---
 function placeOrder() {
     if (!currentCustomer) {
-        alert('Please select a customer first.');
+        showToast('Please select a customer first.');
         return;
     }
     if (cart.length === 0) {
-        alert('Cart is empty. Please add products before placing an order.');
+        showToast('Cart is empty. Please add products before placing an order.');
         return;
     }
 
@@ -970,7 +1016,7 @@ async function finalizeOrderAndShare() {
     }
 
     if (advanceAmount > grandTotal && grandTotal > 0) {
-        alert('Payment received cannot be greater than the grand total.');
+        showToast('Payment received cannot be greater than the grand total.');
         btn.innerHTML = originalText;
         btn.disabled = false;
         return;
@@ -1148,16 +1194,16 @@ async function shareAsImage(text, title) {
                 try {
                     const item = new ClipboardItem({ 'image/png': blob });
                     await navigator.clipboard.write([item]);
-                    alert('Image copied to clipboard! You can paste it into WhatsApp or other apps.');
+                    showToast('Image copied to clipboard! You can paste it into WhatsApp or other apps.');
                 } catch(err) {
                     console.error('Clipboard failed', err);
-                    alert('Could not copy image automatically. You can take a screenshot of the bill.');
+                    showToast('Could not copy image automatically. You can take a screenshot of the bill.');
                 }
             }
         });
     } catch(err) {
         console.error('Image generation failed', err);
-        alert('Failed to generate image. Please make sure you are online to load the image generator script.');
+        showToast('Failed to generate image. Please make sure you are online to load the image generator script.');
     } finally {
         document.body.removeChild(container);
     }
@@ -1245,7 +1291,7 @@ function savePayment(e) {
     const paymentMode = modeSelect ? modeSelect.value : 'Cash';
 
     if (isNaN(amount) || amount <= 0) {
-        alert('Invalid amount');
+        showToast('Invalid amount');
         return;
     }
 
@@ -1258,7 +1304,7 @@ function savePayment(e) {
         }
     } else {
         if (!customerId) {
-            alert('Select a customer');
+            showToast('Select a customer');
             return;
         }
         let remaining = amount;
@@ -1277,7 +1323,7 @@ function savePayment(e) {
         }
 
         if (remaining > 0) {
-            alert(`Payment recorded. ₹${remaining.toFixed(2)} was overpaid (no pending bills for this customer).`);
+            showToast(`Payment recorded. ₹${remaining.toFixed(2)} was overpaid (no pending bills for this customer).`);
         }
     }
 
@@ -1339,6 +1385,7 @@ function renderCustomersList() {
                         ${totalDue > 0 ? 'Due: ₹' + totalDue.toFixed(2) : 'No Dues'}
                     </span>
                     <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8rem; margin-top: 8px;" onclick="editCustomer('${cust.id}')">✏️ Edit</button>
+                    <button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.8rem; margin-top: 8px;" onclick="deleteCustomer('${cust.id}')">🗑️ Delete</button>
                     <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8rem; margin-top: 8px;" onclick="switchView('billsView')">View Bills</button>
                 </div>
             </div>
@@ -1707,7 +1754,7 @@ function toggleFolder(folderId) {
 function shareBill(orderId) {
     const order = orders.find(o => o.id === orderId);
     if (!order) {
-        alert('Bill not found.');
+        showToast('Bill not found.');
         return;
     }
 
@@ -1896,4 +1943,53 @@ function closeMobileMenu(event) {
         menu.style.display = 'none';
     }, 300);
 }
+
+// --- Toast Notification ---
+function showToast(message, type = 'success') {
+    // Inject CSS if not present
+    if (!document.getElementById('toast-styles')) {
+        const style = document.createElement('style');
+        style.id = 'toast-styles';
+        style.innerHTML = `
+            .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+            .toast-message { background: var(--bg-surface, #ffffff); color: var(--text-primary, #1e293b); border-left: 4px solid var(--primary-color, #d4af37); box-shadow: 0 4px 15px rgba(0,0,0,0.1); padding: 12px 20px; border-radius: 8px; font-family: var(--font-primary, 'Inter', sans-serif); font-size: 0.95rem; opacity: 0; transform: translateY(20px); transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; align-items: center; gap: 10px; pointer-events: auto; }
+            .toast-message.show { opacity: 1; transform: translateY(0); }
+            .toast-message.error { border-left-color: #ef4444; }
+            .toast-icon { font-size: 1.2rem; }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    // Create container if not present
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+    }
+
+    // Create toast element
+    const toast = document.createElement('div');
+    toast.className = `toast-message ${type}`;
+    
+    let icon = type === 'error' ? '⚠️' : '✅';
+    toast.innerHTML = `<span class="toast-icon">${icon}</span> <span>${message}</span>`;
+    
+    container.appendChild(toast);
+    
+    // Trigger animation
+    requestAnimationFrame(() => {
+        toast.classList.add('show');
+    });
+    
+    // Remove after 3 seconds
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => {
+            toast.remove();
+        }, 300); // Wait for fade out
+    }, 3000);
+}
+
 
