@@ -473,7 +473,8 @@ function deleteCustomer(id) {
     const customer = customers.find(c => c.id === id);
     if (!customer) return;
     
-    if (!confirm(`Are you sure you want to delete ${customer.name}?`)) return;
+    showCustomConfirm(`Are you sure you want to delete ${customer.name}?`).then(confirmed => {
+        if (!confirmed) return;
 
     customers = customers.filter(c => c.id !== id);
     localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
@@ -501,6 +502,7 @@ function deleteCustomer(id) {
     if (typeof renderCustomerSelect === 'function') renderCustomerSelect();
     if (typeof renderCustomersList === 'function') renderCustomersList();
     showToast('Customer deleted successfully.', 'success');
+    });
 }
 
 function renderCustomerSelect(filterTerm = '') {
@@ -558,7 +560,7 @@ function renderCustomerSelect(filterTerm = '') {
     }
 }
 
-function handleCustomerChange() {
+async function handleCustomerChange() {
     const select = document.getElementById('customerSelect');
     select.size = 1; // Reset size if it was expanded
     const newSelectedId = select.value;
@@ -572,7 +574,7 @@ function handleCustomerChange() {
 
     // If cart has items, warn the user before switching customers
     if (cart.length > 0 && newSelectedId !== (currentCustomer ? currentCustomer.id : '')) {
-        const confirmed = confirm('Changing customer will clear the current cart. Proceed?');
+        const confirmed = await showCustomConfirm('Changing customer will clear the current cart. Proceed?');
         if (!confirmed) {
             // Revert the dropdown back to the previous customer
             select.value = currentCustomer ? currentCustomer.id : '';
@@ -661,13 +663,13 @@ function saveProduct(e) {
     // Don't close modal — allow adding multiple products
 }
 
-function deleteProduct(productId) {
+async function deleteProduct(productId) {
     // Don't allow deleting if product is in the current cart
     if (cart.some(item => item.productId === productId)) {
         showToast('Cannot delete a product that is currently in the cart. Remove it from the cart first.');
         return;
     }
-    if (!confirm('Delete this product permanently?')) return;
+    if (!(await showCustomConfirm('Delete this product permanently?'))) return;
 
     products = products.filter(p => p.id !== productId);
     localStorage.setItem('taruchhaya_products', JSON.stringify(products));
@@ -1991,5 +1993,70 @@ function showToast(message, type = 'success') {
         }, 300); // Wait for fade out
     }, 3000);
 }
+
+// --- Custom Confirm Dialog ---
+function showCustomConfirm(message) {
+    return new Promise((resolve) => {
+        // Inject CSS if not present
+        if (!document.getElementById('confirm-styles')) {
+            const style = document.createElement('style');
+            style.id = 'confirm-styles';
+            style.innerHTML = `
+                .custom-confirm-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.4); z-index: 10000; display: flex; justify-content: center; align-items: center; opacity: 0; transition: opacity 0.2s ease; backdrop-filter: blur(2px); }
+                .custom-confirm-box { background: var(--bg-surface, #fff); padding: 24px; border-radius: 12px; max-width: 400px; width: 90%; box-shadow: 0 10px 25px rgba(0,0,0,0.15); transform: scale(0.95); transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1); font-family: var(--font-primary, 'Inter', sans-serif); color: var(--text-primary, #333); }
+                .custom-confirm-overlay.show { opacity: 1; }
+                .custom-confirm-overlay.show .custom-confirm-box { transform: scale(1); }
+                .custom-confirm-message { font-size: 1.05rem; margin-bottom: 24px; line-height: 1.5; color: #1e293b; }
+                .custom-confirm-actions { display: flex; justify-content: flex-end; gap: 12px; }
+                .custom-confirm-btn { padding: 10px 18px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; transition: background 0.2s; font-size: 0.95rem; }
+                .custom-confirm-cancel { background: #f1f5f9; color: #475569; }
+                .custom-confirm-cancel:hover { background: #e2e8f0; color: #1e293b; }
+                .custom-confirm-ok { background: #ef4444; color: #fff; }
+                .custom-confirm-ok:hover { background: #dc2626; }
+            `;
+            document.head.appendChild(style);
+        }
+
+        const overlay = document.createElement('div');
+        overlay.className = 'custom-confirm-overlay';
+
+        const box = document.createElement('div');
+        box.className = 'custom-confirm-box';
+
+        const msg = document.createElement('div');
+        msg.className = 'custom-confirm-message';
+        msg.textContent = message;
+
+        const actions = document.createElement('div');
+        actions.className = 'custom-confirm-actions';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'custom-confirm-btn custom-confirm-cancel';
+        cancelBtn.textContent = 'Cancel';
+
+        const okBtn = document.createElement('button');
+        okBtn.className = 'custom-confirm-btn custom-confirm-ok';
+        okBtn.textContent = 'Delete / Proceed';
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(okBtn);
+        box.appendChild(msg);
+        box.appendChild(actions);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        // trigger animation
+        requestAnimationFrame(() => overlay.classList.add('show'));
+
+        const cleanup = () => {
+            overlay.classList.remove('show');
+            setTimeout(() => overlay.remove(), 200);
+        };
+
+        cancelBtn.onclick = () => { cleanup(); resolve(false); };
+        okBtn.onclick = () => { cleanup(); resolve(true); };
+    });
+}
+
 
 
