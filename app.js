@@ -18,6 +18,8 @@ let paymentHistory = JSON.parse(localStorage.getItem('taruchhaya_payments')) || 
 
 let currentCustomer = null;
 let cart = []; // Array of { productId, quantity, price, name }
+let editingCustomerId = null;
+let editingProductId = null;
 
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
@@ -54,6 +56,26 @@ function openModal(modalId) {
 
 function closeModal(modalId) {
     document.getElementById(modalId).style.display = 'none';
+    if (modalId === 'customerModal') {
+        editingCustomerId = null;
+        document.getElementById('newCustomerName').value = '';
+        document.getElementById('newCustomerPhone').value = '';
+        const title = document.querySelector('#customerModal h2');
+        if (title) title.textContent = 'Add New Customer';
+        const btn = document.querySelector('#customerForm button[type="submit"]');
+        if (btn) btn.textContent = 'Save Customer';
+    }
+    if (modalId === 'productModal') {
+        editingProductId = null;
+        document.getElementById('newProductName').value = '';
+        document.getElementById('newProductPrice').value = '';
+        const unitInput = document.getElementById('newProductUnit');
+        if (unitInput) unitInput.value = 'pcs';
+        const title = document.querySelector('#productModal h2');
+        if (title) title.textContent = 'Add New Product';
+        const btn = document.querySelector('#productForm button[type="submit"]');
+        if (btn) btn.textContent = 'Save Product';
+    }
 }
 
 // Close modal when clicking outside
@@ -64,6 +86,19 @@ window.onclick = function (event) {
 };
 
 // --- Customer Management ---
+function editCustomer(id) {
+    const customer = customers.find(c => c.id === id);
+    if (!customer) return;
+    editingCustomerId = id;
+    document.getElementById('newCustomerName').value = customer.name;
+    document.getElementById('newCustomerPhone').value = customer.phone || '';
+    const title = document.querySelector('#customerModal h2');
+    if (title) title.textContent = 'Edit Customer';
+    const btn = document.querySelector('#customerForm button[type="submit"]');
+    if (btn) btn.textContent = 'Update Customer';
+    openModal('customerModal');
+}
+
 function saveCustomer(e) {
     e.preventDefault();
     const nameInput = document.getElementById('newCustomerName');
@@ -72,52 +107,46 @@ function saveCustomer(e) {
     const name = nameInput.value.trim();
     if (!name) return;
 
-    const newCustomer = {
-        id: 'cust_' + Date.now(),
-        name: name,
-        phone: phoneInput.value.trim(),
-        createdAt: new Date().toISOString()
-    };
+    if (editingCustomerId) {
+        const customer = customers.find(c => c.id === editingCustomerId);
+        if (customer) {
+            customer.name = name;
+            customer.phone = phoneInput.value.trim();
+        }
+    } else {
+        const newCustomer = {
+            id: 'cust_' + Date.now(),
+            name: name,
+            phone: phoneInput.value.trim(),
+            createdAt: new Date().toISOString()
+        };
+        customers.push(newCustomer);
+        setTimeout(() => {
+            document.getElementById('customerSelect').value = newCustomer.id;
+            handleCustomerChange();
+        }, 50);
+    }
 
-    customers.push(newCustomer);
     localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
 
     renderCustomerSelect();
-
-    // Auto-select the newly created customer
-    document.getElementById('customerSelect').value = newCustomer.id;
-    handleCustomerChange();
-    
-    const paymentSelect = document.getElementById('paymentCustomerSelect');
-    if (paymentSelect) {
-        const opt = document.createElement('option');
-        opt.value = newCustomer.id;
-        opt.textContent = newCustomer.name;
-        const addNewOpt = Array.from(paymentSelect.options).find(o => o.value === 'add_new');
-        if (addNewOpt) {
-            paymentSelect.insertBefore(opt, addNewOpt);
-        } else {
-            paymentSelect.appendChild(opt);
-        }
-        
-        if (document.getElementById('paymentModal').style.display === 'flex') {
-            paymentSelect.value = newCustomer.id;
-            handlePaymentCustomerChange();
-        }
+    if (typeof renderCustomersList === 'function') {
+        renderCustomersList();
     }
-
     closeModal('customerModal');
-    nameInput.value = '';
-    phoneInput.value = '';
 }
 
-function renderCustomerSelect() {
+function renderCustomerSelect(filterTerm = '') {
     const select = document.getElementById('customerSelect');
     const currentVal = select.value; // Preserve current selection if possible
     select.innerHTML = '<option value="">-- Select a Customer --</option>';
 
-    // Sort alphabetically
-    const sortedCustomers = [...customers].sort((a, b) => a.name.localeCompare(b.name));
+    let sortedCustomers = [...customers].sort((a, b) => a.name.localeCompare(b.name));
+    
+    if (filterTerm) {
+        const term = filterTerm.toLowerCase();
+        sortedCustomers = sortedCustomers.filter(c => c.name.toLowerCase().includes(term) || (c.phone && c.phone.includes(term)));
+    }
 
     sortedCustomers.forEach(cust => {
         const option = document.createElement('option');
@@ -132,14 +161,39 @@ function renderCustomerSelect() {
     addNewOption.style.fontWeight = 'bold';
     select.appendChild(addNewOption);
 
-    // Restore selection if it still exists
-    if (currentVal && customers.some(c => c.id === currentVal)) {
+    let shouldAutoSelect = false;
+    let autoSelectId = null;
+
+    if (filterTerm && sortedCustomers.length === 1) {
+        autoSelectId = sortedCustomers[0].id;
+        if (currentVal !== autoSelectId) {
+            shouldAutoSelect = true;
+        }
+    }
+
+    if (shouldAutoSelect) {
+        select.value = autoSelectId;
+        select.size = 1;
+        handleCustomerChange();
+    } else if (currentVal && customers.some(c => c.id === currentVal)) {
         select.value = currentVal;
+        select.size = 1;
+    }
+
+    if (filterTerm && sortedCustomers.length > 1) {
+        try {
+            select.showPicker();
+        } catch (e) {
+            select.size = Math.min(sortedCustomers.length + 2, 6);
+        }
+    } else {
+        select.size = 1;
     }
 }
 
 function handleCustomerChange() {
     const select = document.getElementById('customerSelect');
+    select.size = 1; // Reset size if it was expanded
     const newSelectedId = select.value;
     const productSection = document.getElementById('productSection');
 
@@ -174,6 +228,20 @@ function handleCustomerChange() {
 }
 
 // --- Product Management ---
+function editProduct(id) {
+    const product = products.find(p => p.id === id);
+    if (!product) return;
+    editingProductId = id;
+    document.getElementById('newProductName').value = product.name;
+    document.getElementById('newProductPrice').value = product.price;
+    const unitInput = document.getElementById('newProductUnit');
+    if (unitInput) unitInput.value = product.unit || 'pcs';
+    const title = document.querySelector('#productModal h2');
+    if (title) title.textContent = 'Edit Product';
+    const btn = document.querySelector('#productForm button[type="submit"]');
+    if (btn) btn.textContent = 'Update Product';
+}
+
 function saveProduct(e) {
     e.preventDefault();
     const nameInput = document.getElementById('newProductName');
@@ -189,14 +257,28 @@ function saveProduct(e) {
         return;
     }
 
-    const newProduct = {
-        id: 'prod_' + Date.now(),
-        name: name,
-        price: price,
-        unit: unit
-    };
+    if (editingProductId) {
+        const product = products.find(p => p.id === editingProductId);
+        if (product) {
+            product.name = name;
+            product.price = price;
+            product.unit = unit;
+        }
+        editingProductId = null;
+        const title = document.querySelector('#productModal h2');
+        if (title) title.textContent = 'Add New Product';
+        const btn = document.querySelector('#productForm button[type="submit"]');
+        if (btn) btn.textContent = 'Save Product';
+    } else {
+        const newProduct = {
+            id: 'prod_' + Date.now(),
+            name: name,
+            price: price,
+            unit: unit
+        };
+        products.push(newProduct);
+    }
 
-    products.push(newProduct);
     localStorage.setItem('taruchhaya_products', JSON.stringify(products));
 
     renderProductSelect();
@@ -223,11 +305,16 @@ function deleteProduct(productId) {
     renderExistingProductsList();
 }
 
-function renderProductSelect() {
+function renderProductSelect(filterTerm = '') {
     const select = document.getElementById('productSelect');
+    const currentVal = select.value;
     select.innerHTML = '<option value="">-- Select a Product --</option>';
 
-    const sortedProducts = [...products].sort((a, b) => a.name.localeCompare(b.name));
+    let sortedProducts = [...products].sort((a, b) => a.name.localeCompare(b.name));
+    if (filterTerm) {
+        const term = filterTerm.toLowerCase();
+        sortedProducts = sortedProducts.filter(p => p.name.toLowerCase().includes(term));
+    }
 
     sortedProducts.forEach(prod => {
         const option = document.createElement('option');
@@ -236,6 +323,24 @@ function renderProductSelect() {
         option.textContent = `${prod.name} — ₹${prod.price.toFixed(2)}${unitDisplay}`;
         select.appendChild(option);
     });
+
+    if (filterTerm && sortedProducts.length === 1) {
+        select.value = sortedProducts[0].id;
+        select.size = 1;
+    } else if (currentVal && products.some(p => p.id === currentVal)) {
+        select.value = currentVal;
+        select.size = 1;
+    }
+
+    if (filterTerm && sortedProducts.length > 1) {
+        try {
+            select.showPicker();
+        } catch (e) {
+            select.size = Math.min(sortedProducts.length + 1, 6);
+        }
+    } else {
+        select.size = 1;
+    }
 }
 
 function renderExistingProductsList() {
@@ -256,6 +361,7 @@ function renderExistingProductsList() {
             <span>${prod.name}</span>
             <span style="display:flex; align-items:center; gap:12px;">
                 <span style="color: var(--success-color); font-weight:600;">₹${prod.price.toFixed(2)}${unitDisplay}</span>
+                <button class="btn btn-secondary" onclick="editProduct('${prod.id}')" title="Edit product" style="padding:2px 6px; font-size:0.8rem;">✏️</button>
                 <button class="btn btn-danger" onclick="deleteProduct('${prod.id}')" title="Delete product" style="padding:2px 6px; font-size:0.8rem;">✕</button>
             </span>
         `;
@@ -404,10 +510,24 @@ function renderCart() {
         });
     }
 
-    const finalTotal = grandTotal + previousDue;
+    const additionalCostAmountInput = document.getElementById('additionalCostAmount');
+    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+    const additionalCostReasonInput = document.getElementById('additionalCostReason');
+    const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
 
-    if (previousDue > 0) {
-        grandTotalElement.innerHTML = `<div style="font-size: 0.9rem; font-weight: normal; color: var(--text-secondary); text-align: right; line-height: 1.4;">Items: ₹${grandTotal.toFixed(2)}<br><span style="color:var(--danger-color)">Prev Due: ₹${previousDue.toFixed(2)}</span></div><div>₹${finalTotal.toFixed(2)}</div>`;
+    const finalTotal = grandTotal + previousDue + additionalCost;
+
+    if (previousDue > 0 || additionalCost > 0) {
+        let totalHtml = `<div style="font-size: 0.9rem; font-weight: normal; color: var(--text-secondary); text-align: right; line-height: 1.4;">Items: ₹${grandTotal.toFixed(2)}`;
+        if (additionalCost > 0) {
+            const reasonDisplay = additionalCostReason ? additionalCostReason : 'Misc';
+            totalHtml += `<br>${reasonDisplay}: ₹${additionalCost.toFixed(2)}`;
+        }
+        if (previousDue > 0) {
+            totalHtml += `<br><span style="color:var(--danger-color)">Prev Due: ₹${previousDue.toFixed(2)}</span>`;
+        }
+        totalHtml += `</div><div>₹${finalTotal.toFixed(2)}</div>`;
+        grandTotalElement.innerHTML = totalHtml;
     } else {
         grandTotalElement.textContent = `₹${finalTotal.toFixed(2)}`;
     }
@@ -431,10 +551,19 @@ function placeOrder() {
         previousDue += (order.totalAmount - (order.paidAmount || 0));
     });
 
-    const grandTotal = itemsTotal + previousDue;
+    const additionalCostAmountInput = document.getElementById('additionalCostAmount');
+    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+    const additionalCostReasonInput = document.getElementById('additionalCostReason');
+    const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
+
+    const grandTotal = itemsTotal + previousDue + additionalCost;
 
     document.getElementById('confirmCustomerName').textContent = `Customer: ${currentCustomer.name}`;
     let confirmText = `Items Total: ₹${itemsTotal.toFixed(2)}`;
+    if (additionalCost > 0) {
+        const reasonDisplay = additionalCostReason ? additionalCostReason : 'Misc';
+        confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${reasonDisplay}: ₹${additionalCost.toFixed(2)}</span>`;
+    }
     if (previousDue > 0) {
         confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Previous Due: ₹${previousDue.toFixed(2)}</span>`;
     }
@@ -496,7 +625,12 @@ async function finalizeOrderAndShare() {
         }
     });
 
-    const grandTotal = itemsTotal + previousDue;
+    const additionalCostAmountInput = document.getElementById('additionalCostAmount');
+    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+    const additionalCostReasonInput = document.getElementById('additionalCostReason');
+    const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
+
+    const grandTotal = itemsTotal + previousDue + additionalCost;
 
     const advancePaymentInput = document.getElementById('advancePaymentAmount');
     const advanceModeInput = document.getElementById('advancePaymentMode');
@@ -520,6 +654,8 @@ async function finalizeOrderAndShare() {
         items: [...cart],
         itemsTotal: itemsTotal,
         previousDue: previousDue,
+        additionalCost: additionalCost,
+        additionalCostReason: additionalCostReason,
         totalAmount: grandTotal,
         paidAmount: advanceAmount,
         date: new Date().toISOString()
@@ -544,7 +680,11 @@ async function finalizeOrderAndShare() {
     }
 
     // Build shareable bill text
-    const billText = buildBillText(currentCustomer.name, cart, grandTotal, previousDue, advanceAmount);
+    const billText = buildBillText(currentCustomer.name, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason);
+    
+    // Reset inputs
+    if (additionalCostAmountInput) additionalCostAmountInput.value = '';
+    if (additionalCostReasonInput) additionalCostReasonInput.value = '';
 
     // Share or copy as image
     await shareAsImage(billText, `Bill for ${currentCustomer.name}`);
@@ -566,7 +706,7 @@ async function finalizeOrderAndShare() {
 }
 
 // --- Utility: Build bill text ---
-function buildBillText(customerName, items, grandTotal, previousDue = 0, advanceAmount = 0) {
+function buildBillText(customerName, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '') {
     const date = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
     // Use triple backticks for monospace formatting in WhatsApp
@@ -597,8 +737,13 @@ function buildBillText(customerName, items, grandTotal, previousDue = 0, advance
     text += "-------------------------------------------------\n";
 
     // Totals
-    const subTotal = grandTotal - previousDue;
+    const subTotal = grandTotal - previousDue - additionalCost;
     text += `Sub Total       : ${subTotal.toFixed(2).padStart(20)}\n`;
+
+    if (additionalCost > 0) {
+        let reason = additionalCostReason ? additionalCostReason.substring(0, 15) : 'Misc. Cost';
+        text += `${reason.padEnd(16)}: ${additionalCost.toFixed(2).padStart(20)}\n`;
+    }
 
     if (previousDue > 0) {
         text += `Previous Due    : ${previousDue.toFixed(2).padStart(20)}\n`;
@@ -854,6 +999,7 @@ function renderCustomersList() {
                     <span style="display:block; color:${totalDue > 0 ? 'var(--danger-color)' : 'var(--success-color)'}; font-weight:bold; font-size:1rem;">
                         ${totalDue > 0 ? 'Due: ₹' + totalDue.toFixed(2) : 'No Dues'}
                     </span>
+                    <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8rem; margin-top: 8px;" onclick="editCustomer('${cust.id}')">✏️ Edit</button>
                     <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8rem; margin-top: 8px;" onclick="switchView('billsView')">View Bills</button>
                 </div>
             </div>

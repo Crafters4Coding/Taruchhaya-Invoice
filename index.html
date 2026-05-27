@@ -160,11 +160,14 @@
                     <!-- Customer Section -->
                     <section class="glass-panel section-card">
                         <h2>1. Select Customer</h2>
-                        <div class="input-group customer-input-group">
-                            <select id="customerSelect" onchange="handleCustomerChange()">
-                                <option value="">-- Select a Customer --</option>
-                            </select>
-                            <button class="btn btn-primary" onclick="openModal('customerModal')">+ New</button>
+                        <div class="input-group customer-input-group" style="flex-direction: column; gap: 10px;">
+                            <input type="text" id="customerSearch" placeholder="🔍 Search customer..." oninput="renderCustomerSelect(this.value)" style="padding: 10px; border-radius: 8px; border: 1px solid var(--panel-border); width: 100%;">
+                            <div style="display: flex; gap: 10px; width: 100%;">
+                                <select id="customerSelect" onchange="handleCustomerChange()" onblur="this.size=1" style="flex: 1;">
+                                    <option value="">-- Select a Customer --</option>
+                                </select>
+                                <button class="btn btn-primary" onclick="openModal('customerModal')">+ New</button>
+                            </div>
                         </div>
                     </section>
 
@@ -172,13 +175,16 @@
                     <section class="glass-panel section-card" id="productSection"
                         style="opacity: 0.5; pointer-events: none;">
                         <h2>2. Add Products</h2>
-                        <div class="input-group product-input-group">
-                            <select id="productSelect">
-                                <option value="">-- Select a Product --</option>
-                            </select>
-                            <div class="qty-add-row">
-                                <input type="number" id="productQuantity" min="1" value="1" placeholder="Qty">
-                                <button class="btn btn-primary" onclick="addProductToCart()">Add</button>
+                        <div class="input-group product-input-group" style="flex-direction: column; gap: 10px;">
+                            <input type="text" id="productSearch" placeholder="🔍 Search product..." oninput="renderProductSelect(this.value)" style="padding: 10px; border-radius: 8px; border: 1px solid var(--panel-border); width: 100%;">
+                            <div style="display: flex; gap: 10px; width: 100%;">
+                                <select id="productSelect" style="flex: 1;" onchange="this.size=1" onblur="this.size=1">
+                                    <option value="">-- Select a Product --</option>
+                                </select>
+                                <div class="qty-add-row" style="display: flex; gap: 10px;">
+                                    <input type="number" id="productQuantity" min="1" value="1" placeholder="Qty" style="width: 70px;">
+                                    <button class="btn btn-primary" onclick="addProductToCart()">Add</button>
+                                </div>
                             </div>
                         </div>
                     </section>
@@ -208,6 +214,10 @@
                         </div>
 
                         <div class="cart-footer">
+                            <div style="display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid var(--panel-border); padding-bottom: 15px;">
+                                <input type="text" id="additionalCostReason" placeholder="Reason (e.g. Fare)" style="flex: 2; padding: 8px; border-radius: 6px; border: 1px solid var(--panel-border); font-size: 0.9rem;" oninput="renderCart()">
+                                <input type="number" id="additionalCostAmount" placeholder="Amount (₹)" min="0" step="0.01" style="flex: 1; padding: 8px; border-radius: 6px; border: 1px solid var(--panel-border); font-size: 0.9rem;" oninput="renderCart()">
+                            </div>
                             <div class="grand-total">
                                 <span>Grand Total:</span>
                                 <span id="grandTotalValue">₹0.00</span>
