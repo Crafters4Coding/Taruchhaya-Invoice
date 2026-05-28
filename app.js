@@ -21,6 +21,25 @@ let cart = []; // Array of { productId, quantity, price, name }
 let editingCustomerId = null;
 let editingProductId = null;
 
+function getInvoiceNumber(order) {
+    if (!order || !order.id) return '';
+    const parts = order.id.split('_');
+    if (parts.length >= 3) {
+        return 'TE-' + parts[2];
+    }
+    // Fallback: if it's an old order ID like ord_1716912345678
+    if (parts.length === 2 && !isNaN(parts[1])) {
+        const ts = parseInt(parts[1], 10);
+        const d = new Date(ts);
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const serial = String(ts % 10000).padStart(4, '0');
+        return `TE-${yyyy}${mm}${dd}-${serial}`;
+    }
+    return order.id;
+}
+
 // --- Supabase Cloud Sync Logic ---
 // You can enter your credentials here to hardcode them, 
 // or set them dynamically from the "Cloud Settings" modal in the application.
@@ -1116,7 +1135,19 @@ async function finalizeOrderAndShare() {
     await new Promise(r => setTimeout(r, 400));
 
     const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const newOrderId = 'ord_' + Date.now();
+    
+    // Calculate the next invoice number
+    let nextInvoiceNum = 1001;
+    if (orders.length > 0) {
+        const numbers = orders.map(o => {
+            const parts = o.id.split('_');
+            return parts.length >= 3 ? parseInt(parts[2], 10) : 0;
+        }).filter(num => !isNaN(num) && num > 0);
+        if (numbers.length > 0) {
+            nextInvoiceNum = Math.max(...numbers) + 1;
+        }
+    }
+    const newOrderId = 'ord_' + Date.now() + '_' + nextInvoiceNum;
 
     let previousDue = 0;
     orders.filter(o => o.customerId === currentCustomer.id).forEach(order => {
@@ -1189,7 +1220,8 @@ async function finalizeOrderAndShare() {
     }
 
     // Build shareable bill HTML
-    const billElement = buildBillHTML(currentCustomer.name, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason);
+    const invoiceNum = 'TE-' + nextInvoiceNum;
+    const billElement = buildBillHTML(currentCustomer.name, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason, invoiceNum);
 
     // Reset inputs
     if (additionalCostAmountInput) additionalCostAmountInput.value = '';
@@ -1214,7 +1246,7 @@ async function finalizeOrderAndShare() {
 }
 
 // --- Utility: Build bill HTML ---
-function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '') {
+function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '', invoiceNum = '') {
     const date = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
     
     const container = document.createElement('div');
@@ -1233,7 +1265,8 @@ function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advance
             </div>
             <div style="text-align: right;">
                 <h2 style="margin: 0; font-size: 24px; color: #334155;">INVOICE</h2>
-                <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Date: <strong>${date}</strong></p>
+                ${invoiceNum ? `<p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Invoice No: <strong>${invoiceNum}</strong></p>` : ''}
+                <p style="margin: ${invoiceNum ? '3px' : '5px'} 0 0 0; color: #64748b; font-size: 14px;">Date: <strong>${date}</strong></p>
             </div>
         </div>
         
@@ -1900,9 +1933,11 @@ function renderBills() {
                 `;
             }
 
+            const invoiceNum = getInvoiceNumber(order);
             billCard.innerHTML = `
                 <div class="bill-card-header">
                     <div>
+                        <div style="font-weight: 700; color: var(--accent-color); font-size: 0.95rem; margin-bottom: 2px;"># ${invoiceNum}</div>
                         <span class="bill-date">${dateString}</span>
                     </div>
                     <div style="display: flex; gap: 8px;">
@@ -1949,7 +1984,8 @@ function shareBill(orderId) {
         (customers.find(c => c.id === order.customerId) || {}).name ||
         'Customer';
 
-    const billElement = buildBillHTML(customerName, order.items, order.totalAmount, order.previousDue || 0);
+    const invoiceNum = getInvoiceNumber(order);
+    const billElement = buildBillHTML(customerName, order.items, order.totalAmount, order.previousDue || 0, order.paidAmount || 0, order.additionalCost || 0, order.additionalCostReason || '', invoiceNum);
     shareAsImage(billElement, `Bill for ${customerName}`);
 }
 
@@ -1980,11 +2016,12 @@ function printInvoice(orderId) {
         `;
     });
 
+    const invoiceNum = getInvoiceNumber(order);
     const printWindow = window.open('', '', 'width=800,height=900');
     printWindow.document.write(`
     <html>
     <head>
-        <title>Invoice - ${customerName}</title>
+        <title>Invoice - ${invoiceNum} - ${customerName}</title>
         <style>
             body { font-family: 'Inter', -apple-system, sans-serif; color: #333; margin: 0; padding: 40px; }
             .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 50px; }
@@ -2038,6 +2075,7 @@ function printInvoice(orderId) {
             </div>
             <div>
                 <table class="meta-table">
+                    <tr><td>Invoice No :</td><td><strong>${invoiceNum}</strong></td></tr>
                     <tr><td>Invoice Date :</td><td>${dateString}</td></tr>
                     <tr><td>Terms :</td><td>Due On Receipt</td></tr>
                     <tr><td>Due Date :</td><td>${dateString}</td></tr>
