@@ -536,14 +536,10 @@ function deleteCustomer(id) {
             currentCustomer = null;
             const select = document.getElementById('customerSelect');
             if (select) select.value = '';
-            const productSection = document.getElementById('productSection');
-            if (productSection) {
-                productSection.style.opacity = '0.5';
-                productSection.style.pointerEvents = 'none';
-            }
             // Also clear cart just in case
             cart = [];
             if (typeof renderCart === 'function') renderCart();
+            if (typeof updateOrderStepUI === 'function') updateOrderStepUI();
         }
 
         if (typeof renderCustomerSelect === 'function') renderCustomerSelect();
@@ -611,7 +607,6 @@ async function handleCustomerChange() {
     const select = document.getElementById('customerSelect');
     select.size = 1; // Reset size if it was expanded
     const newSelectedId = select.value;
-    const productSection = document.getElementById('productSection');
 
     if (newSelectedId === 'add_new') {
         openModal('customerModal');
@@ -634,14 +629,14 @@ async function handleCustomerChange() {
 
     if (newSelectedId) {
         currentCustomer = customers.find(c => c.id === newSelectedId) || null;
-        productSection.style.opacity = '1';
-        productSection.style.pointerEvents = 'auto';
     } else {
         currentCustomer = null;
-        productSection.style.opacity = '0.5';
-        productSection.style.pointerEvents = 'none';
     }
+
+    renderCart();
+    updateOrderStepUI();
 }
+
 
 // --- Product Management ---
 function editProduct(id) {
@@ -778,14 +773,29 @@ function renderExistingProductsList() {
 
     sorted.forEach(prod => {
         const li = document.createElement('li');
-        const unitDisplay = prod.unit ? `<span style="font-size:0.8rem; color:var(--text-secondary); margin-left:4px;">/${prod.unit}</span>` : '';
+        li.className = 'bill-card';
+        li.style.marginBottom = '15px';
+        li.style.display = 'flex';
+        li.style.flexDirection = 'column';
+        li.style.gap = '10px';
+        li.style.padding = '15px'; // Override simple-list default padding
+        li.style.border = '1px solid var(--panel-border)';
+        li.style.borderRadius = '8px';
+        li.style.backgroundColor = '#f8fafc'; // Match the bill-card exact background if needed
+        const unitDisplay = prod.unit ? `<span style="font-size:0.9rem; color:var(--text-color); font-weight:500; margin-left:4px;">/${prod.unit}</span>` : '';
         li.innerHTML = `
-            <span>${prod.name}</span>
-            <span style="display:flex; align-items:center; gap:12px;">
-                <span style="color: var(--success-color); font-weight:600;">₹${prod.price.toFixed(2)}${unitDisplay}</span>
-                <button class="btn btn-secondary" onclick="editProduct('${prod.id}')" title="Edit product" style="padding:2px 6px; font-size:0.8rem;">✏️</button>
-                <button class="btn btn-danger" onclick="deleteProduct('${prod.id}')" title="Delete product" style="padding:2px 6px; font-size:0.8rem;">✕</button>
-            </span>
+            <div style="font-weight: 700; font-size: 1.15rem; color: #1e293b;">${prod.name}</div>
+            <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; flex-wrap: wrap; gap: 10px; margin-top: 5px;">
+                <span style="color: var(--success-color); font-weight: 700; font-size: 1.1rem; flex: 1;">
+                    ₹${prod.price.toFixed(2)}${unitDisplay}
+                </span>
+                
+                <div style="display: flex; gap: 12px; align-items: center;">
+                    <button class="btn btn-secondary" onclick="editProduct('${prod.id}')" title="Edit product" style="padding: 4px 12px; font-size: 0.9rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px; display: flex; align-items: center; gap: 4px;">✏️ Edit</button>
+                    
+                    <button class="btn-danger" onclick="deleteProduct('${prod.id}')" title="Delete product" style="padding: 4px 8px; font-size: 0.9rem; border: none; background: transparent; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--danger-color);">🗑️ Delete</button>
+                </div>
+            </div>
         `;
         list.appendChild(li);
     });
@@ -873,56 +883,123 @@ function updateCartPrice(productId, newPrice) {
     }
 }
 
+// --- Order Step UI Helpers ---
+function stepQty(delta) {
+    const input = document.getElementById('productQuantity');
+    const val = parseInt(input.value, 10) || 1;
+    input.value = Math.max(1, val + delta);
+}
+
+function expandStep(stepNum) {
+    if (stepNum === 1) {
+        document.getElementById('step1Body').style.display = 'flex';
+        document.getElementById('editStep1Btn').style.display = 'none';
+    }
+}
+
+function updateOrderStepUI() {
+    const step1 = document.getElementById('order-step-1');
+    const step2 = document.getElementById('order-step-2');
+    const ind1 = document.getElementById('step-indicator-1');
+    const ind2 = document.getElementById('step-indicator-2');
+    const ind3 = document.getElementById('step-indicator-3');
+    const lines = document.querySelectorAll('.stepper-line');
+    const stickyBar = document.getElementById('stickyCartBar');
+    const cartCountLabel = document.getElementById('cartCountLabel');
+    const selectedCustomerLabel = document.getElementById('selectedCustomerLabel');
+
+    if (currentCustomer) {
+        // Customer selected: lock step 1, activate step 2
+        step2.classList.remove('dimmed');
+        step2.style.pointerEvents = 'auto';
+
+        ind1.classList.remove('active');
+        ind1.classList.add('done');
+        ind2.classList.add('active');
+        ind2.classList.remove('done');
+        if (lines[0]) lines[0].classList.add('active');
+
+        if (selectedCustomerLabel) {
+            selectedCustomerLabel.textContent = currentCustomer.name + (currentCustomer.phone ? ' · ' + currentCustomer.phone : '');
+        }
+        document.getElementById('editStep1Btn').style.display = 'inline-flex';
+        document.getElementById('step1Body').style.display = 'none';
+    } else {
+        // No customer
+        step2.classList.add('dimmed');
+        step2.style.pointerEvents = 'none';
+
+        ind1.classList.add('active');
+        ind1.classList.remove('done');
+        ind2.classList.remove('active', 'done');
+        ind3.classList.remove('active', 'done');
+        if (lines[0]) lines[0].classList.remove('active');
+        if (lines[1]) lines[1].classList.remove('active');
+
+        if (selectedCustomerLabel) selectedCustomerLabel.textContent = 'No customer selected';
+        document.getElementById('editStep1Btn').style.display = 'none';
+        document.getElementById('step1Body').style.display = 'flex';
+    }
+
+    const itemCount = cart.length;
+    if (cartCountLabel) {
+        cartCountLabel.textContent = itemCount === 0 ? '0 items in cart' : `${itemCount} item${itemCount > 1 ? 's' : ''} in cart`;
+    }
+
+    if (cart.length > 0 && currentCustomer) {
+        ind3.classList.add('active');
+        ind3.classList.remove('done');
+        if (lines[1]) lines[1].classList.add('active');
+        if (stickyBar) stickyBar.style.display = 'flex';
+    } else {
+        ind3.classList.remove('active', 'done');
+        if (lines[1]) lines[1].classList.remove('active');
+        if (stickyBar) stickyBar.style.display = 'none';
+    }
+}
+
 function renderCart() {
-    const tbody = document.getElementById('cartBody');
+    const cartItemsList = document.getElementById('cartItemsList');
     const emptyMsg = document.getElementById('emptyCartMessage');
     const placeOrderBtn = document.getElementById('placeOrderBtn');
-    const grandTotalElement = document.getElementById('grandTotalValue');
+    const cartBarTotal = document.getElementById('cartBarTotal');
+    const cartBarItemCount = document.getElementById('cartBarItemCount');
 
-    tbody.innerHTML = '';
+    cartItemsList.innerHTML = '';
     let grandTotal = 0;
 
     if (cart.length === 0) {
-        emptyMsg.style.display = 'block';
-        placeOrderBtn.disabled = true;
-        grandTotalElement.textContent = '₹0.00';
+        if (emptyMsg) emptyMsg.style.display = 'block';
+        if (placeOrderBtn) placeOrderBtn.disabled = true;
+        if (cartBarTotal) cartBarTotal.textContent = '₹0.00';
+        if (cartBarItemCount) cartBarItemCount.textContent = '0 items';
+        updateOrderStepUI();
         return;
     }
 
-    emptyMsg.style.display = 'none';
-    placeOrderBtn.disabled = !currentCustomer; // Only enable if customer is selected
+    if (emptyMsg) emptyMsg.style.display = 'none';
+    if (placeOrderBtn) placeOrderBtn.disabled = !currentCustomer;
 
     cart.forEach(item => {
         const itemTotal = item.price * item.quantity;
         grandTotal += itemTotal;
 
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td style="padding-right: 10px;">${item.name}</td>
-            <td style="padding-right: 10px;">
-                <div style="display: flex; align-items: center; gap: 4px;">
-                    <input type="number" min="1" value="${item.quantity}"
-                        style="width:55px; padding:4px; font-size:0.9rem; text-align: center; border: 1px solid var(--panel-border); border-radius: 4px;"
-                        onchange="updateCartQuantity('${item.productId}', this.value)"
-                        onblur="updateCartQuantity('${item.productId}', this.value)">
-                    <span style="font-size: 0.75rem; color: var(--text-secondary);">${item.unit || 'pcs'}</span>
-                </div>
-            </td>
-            <td style="padding-right: 10px;">
-                <div style="display: flex; align-items: center; gap: 4px;">
-                    <span style="color: var(--text-secondary); font-weight: 500;">₹</span>
-                    <input type="number" min="0" step="0.01" value="${item.price.toFixed(2)}"
-                        style="width:75px; padding:4px; font-size:0.9rem; border: 1px solid var(--panel-border); border-radius: 4px;"
-                        onchange="updateCartPrice('${item.productId}', this.value)"
-                        onblur="updateCartPrice('${item.productId}', this.value)">
-                </div>
-            </td>
-            <td style="font-weight: 600; padding-right: 10px;">₹${itemTotal.toFixed(2)}</td>
-            <td>
-                <button class="btn btn-danger" onclick="removeFromCart('${item.productId}')" title="Remove" style="padding: 4px 8px;">✕</button>
-            </td>
+        const card = document.createElement('div');
+        card.className = 'cart-item-card';
+        card.innerHTML = `
+            <div class="cart-item-info">
+                <div class="cart-item-name">${item.name}</div>
+                <div class="cart-item-price">₹${item.price.toFixed(2)} / ${item.unit || 'pcs'}</div>
+            </div>
+            <div class="cart-item-qty-wrap">
+                <button class="cart-qty-btn" onclick="updateCartQuantity('${item.productId}', ${item.quantity - 1})" type="button">−</button>
+                <div class="cart-qty-display">${item.quantity}</div>
+                <button class="cart-qty-btn" onclick="updateCartQuantity('${item.productId}', ${item.quantity + 1})" type="button">＋</button>
+            </div>
+            <div class="cart-item-total">₹${itemTotal.toFixed(2)}</div>
+            <button class="cart-item-del" onclick="removeFromCart('${item.productId}')" title="Remove">✕</button>
         `;
-        tbody.appendChild(tr);
+        cartItemsList.appendChild(card);
     });
 
     let previousDue = 0;
@@ -934,26 +1011,30 @@ function renderCart() {
 
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
     const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
-    const additionalCostReasonInput = document.getElementById('additionalCostReason');
-    const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
 
     const finalTotal = grandTotal + previousDue + additionalCost;
 
-    if (previousDue > 0 || additionalCost > 0) {
-        let totalHtml = `<div style="font-size: 0.9rem; font-weight: normal; color: var(--text-secondary); text-align: right; line-height: 1.4;">Items: ₹${grandTotal.toFixed(2)}`;
-        if (additionalCost > 0) {
-            const reasonDisplay = additionalCostReason ? additionalCostReason : 'Misc';
-            totalHtml += `<br>${reasonDisplay}: ₹${additionalCost.toFixed(2)}`;
-        }
-        if (previousDue > 0) {
-            totalHtml += `<br><span style="color:var(--danger-color)">Prev Due: ₹${previousDue.toFixed(2)}</span>`;
-        }
-        totalHtml += `</div><div>₹${finalTotal.toFixed(2)}</div>`;
-        grandTotalElement.innerHTML = totalHtml;
-    } else {
-        grandTotalElement.textContent = `₹${finalTotal.toFixed(2)}`;
+    if (cartBarTotal) cartBarTotal.textContent = `₹${finalTotal.toFixed(2)}`;
+    if (cartBarItemCount) {
+        const totalQty = cart.reduce((s, i) => s + i.quantity, 0);
+        cartBarItemCount.textContent = `${totalQty} item${totalQty !== 1 ? 's' : ''}`;
     }
+
+    // Keep a hidden element for grand total (used by placeOrder logic)
+    let grandTotalElement = document.getElementById('grandTotalValue');
+    if (!grandTotalElement) {
+        grandTotalElement = document.createElement('span');
+        grandTotalElement.id = 'grandTotalValue';
+        grandTotalElement.style.display = 'none';
+        document.body.appendChild(grandTotalElement);
+    }
+    grandTotalElement.textContent = `₹${finalTotal.toFixed(2)}`;
+    grandTotalElement.dataset.rawTotal = finalTotal;
+    grandTotalElement.dataset.previousDue = previousDue;
+
+    updateOrderStepUI();
 }
+
 
 // --- Place Order ---
 function placeOrder() {
@@ -1121,9 +1202,8 @@ async function finalizeOrderAndShare() {
     cart = [];
     currentCustomer = null;
 
-    document.getElementById('customerSelect').value = '';
-    document.getElementById('productSection').style.opacity = '0.5';
-    document.getElementById('productSection').style.pointerEvents = 'none';
+    const custSelect = document.getElementById('customerSelect');
+    if (custSelect) custSelect.value = '';
 
     renderCart();
     renderBills();
@@ -1466,22 +1546,34 @@ function renderCustomersList() {
 
         const card = document.createElement('div');
         card.className = 'bill-card';
-        card.style.marginBottom = '10px';
+        card.style.marginBottom = '15px';
+        card.style.display = 'flex';
+        card.style.flexDirection = 'column';
+        card.style.gap = '10px';
+        
         card.innerHTML = `
-            <div class="bill-card-header" style="border-bottom: none; padding-bottom: 0;">
-                <div>
-                    <h3 style="margin:0; font-size:1.05rem; color: var(--text-color);">${cust.name}</h3>
-                    <span class="bill-date" style="display:block; margin-top:4px;">📞 ${cust.phone || 'N/A'}</span>
-                    <span class="bill-date" style="display:block; margin-top:4px;">Added: ${dateString}</span>
+            <div>
+                <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #1e293b;">${cust.name}</h3>
+                <div style="margin-top: 4px; display: flex; flex-direction: column; gap: 2px;">
+                    <span style="font-size: 0.9rem; color: #64748b;">📞 ${cust.phone || 'N/A'}</span>
+                    <span style="font-size: 0.9rem; color: #64748b;">Added: ${dateString}</span>
                 </div>
-                <div style="text-align: right;">
-                    <span style="display:block; color:${totalDue > 0 ? 'var(--danger-color)' : 'var(--success-color)'}; font-weight:bold; font-size:1rem;">
-                        ${totalDue > 0 ? 'Due: ₹' + totalDue.toFixed(2) : 'No Dues'}
-                    </span>
-                    <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8rem; margin-top: 8px;" onclick="editCustomer('${cust.id}')">✏️ Edit</button>
-                    <button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.8rem; margin-top: 8px;" onclick="deleteCustomer('${cust.id}')">🗑️ Delete</button>
-                    <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8rem; margin-top: 8px;" onclick="switchView('billsView')">View Bills</button>
+            </div>
+            
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 5px;">
+                <span style="color: ${totalDue > 0 ? 'var(--danger-color)' : 'var(--success-color)'}; font-weight: 700; font-size: 1.1rem; flex: 1;">
+                    ${totalDue > 0 ? 'Due: ₹' + totalDue.toFixed(2) : 'No Dues'}
+                </span>
+                
+                <div style="display: flex; gap: 12px; align-items: center;">
+                    <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 0.9rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px; display: flex; align-items: center; gap: 4px;" onclick="editCustomer('${cust.id}')">✏️ Edit</button>
+                    
+                    <button class="btn-danger" style="padding: 4px 8px; font-size: 0.9rem; border: none; background: transparent; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--danger-color);" onclick="deleteCustomer('${cust.id}')">🗑️ Delete</button>
                 </div>
+            </div>
+            
+            <div style="margin-top: 5px;">
+                <button class="btn btn-secondary" style="padding: 6px 16px; font-size: 0.95rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px;" onclick="switchView('billsView')">View Bills</button>
             </div>
         `;
         container.appendChild(card);
@@ -1624,7 +1716,7 @@ function switchView(viewId) {
     document.getElementById('historyView').style.display = 'none';
     document.getElementById('customersView').style.display = 'none';
 
-    document.getElementById(viewId).style.display = viewId === 'mainView' ? 'grid' : 'block';
+    document.getElementById(viewId).style.display = '';
 
     if (viewId === 'homeView') renderHomeDashboard();
     if (viewId === 'billsView') renderBills();

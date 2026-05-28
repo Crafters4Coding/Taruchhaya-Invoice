@@ -8,7 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=15">
+    <link rel="stylesheet" href="style.css?v=17">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -19,7 +19,7 @@
         style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; opacity: 0; transition: opacity 0.3s;"
         onclick="closeMobileMenu(event)">
         <div id="mobileSideMenuContent"
-            style="background: var(--bg-color); width: 250px; height: 100%; padding: 1.5rem; transform: translateX(-100%); transition: transform 0.3s; display: flex; flex-direction: column; gap: 1rem;"
+            style="background: var(--bg-color); width: 280px; height: 100%; padding: 1.5rem; transform: translateX(-100%); transition: transform 0.3s; display: flex; flex-direction: column; gap: 1rem;"
             onclick="event.stopPropagation()">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                 <h2 style="color: #2563eb; font-size: 1.2rem; font-weight: 700;">Menu</h2>
@@ -203,91 +203,104 @@
             </main>
 
             <!-- Main Content Grid (New Order) -->
-            <main class="main-grid view-page" id="mainView" style="display:none;">
+            <main class="view-page order-view" id="mainView" style="display:none;">
 
-                <!-- Left Column: Customer & Product Selection -->
-                <div class="left-col">
-                    <!-- Customer Section -->
-                    <section class="glass-panel section-card">
-                        <h2>1. Select Customer</h2>
-                        <div class="input-group customer-input-group" style="flex-direction: column; gap: 10px;">
-                            <input type="text" id="customerSearch" placeholder="🔍 Search customer..."
-                                oninput="renderCustomerSelect(this.value)"
-                                style="padding: 10px; border-radius: 8px; border: 1px solid var(--panel-border); width: 100%;">
-                            <div class="customer-select-row" style="display: flex; gap: 10px; width: 100%;">
-                                <select id="customerSelect" onchange="handleCustomerChange()" onblur="this.size=1"
-                                    style="flex: 1;">
-                                    <option value="">-- Select a Customer --</option>
-                                </select>
-                                <button class="btn btn-primary" onclick="openModal('customerModal')">+ New</button>
-                            </div>
-                        </div>
-                    </section>
-
-                    <!-- Product Selection Section -->
-                    <section class="glass-panel section-card" id="productSection"
-                        style="opacity: 0.5; pointer-events: none;">
-                        <h2>2. Add Products</h2>
-                        <div class="input-group product-input-group" style="flex-direction: column; gap: 10px;">
-                            <input type="text" id="productSearch" placeholder="🔍 Search product..."
-                                oninput="renderProductSelect(this.value)"
-                                style="padding: 10px; border-radius: 8px; border: 1px solid var(--panel-border); width: 100%;">
-                            <div class="product-select-row" style="display: flex; gap: 10px; width: 100%;">
-                                <select id="productSelect" style="flex: 1;" onchange="this.size=1" onblur="this.size=1">
-                                    <option value="">-- Select a Product --</option>
-                                </select>
-                                <div class="qty-add-row" style="display: flex; gap: 10px;">
-                                    <input type="number" id="productQuantity" min="1" value="1" placeholder="Qty"
-                                        style="width: 70px;">
-                                    <button class="btn btn-primary" onclick="addProductToCart()">Add</button>
-                                </div>
-                            </div>
-                        </div>
-                    </section>
+                <!-- Step Progress Indicator -->
+                <div class="order-stepper">
+                    <div class="stepper-step active" id="step-indicator-1">
+                        <div class="stepper-dot">1</div>
+                        <span>Customer</span>
+                    </div>
+                    <div class="stepper-line"></div>
+                    <div class="stepper-step" id="step-indicator-2">
+                        <div class="stepper-dot">2</div>
+                        <span>Products</span>
+                    </div>
+                    <div class="stepper-line"></div>
+                    <div class="stepper-step" id="step-indicator-3">
+                        <div class="stepper-dot">3</div>
+                        <span>Review</span>
+                    </div>
                 </div>
 
-                <!-- Right Column: Cart & Order Summary -->
-                <div class="right-col">
-                    <section class="glass-panel section-card cart-section">
-                        <h2>3. Order Summary</h2>
+                <!-- Step 1: Customer -->
+                <div class="order-step-card glass-panel" id="order-step-1">
+                    <div class="order-step-header">
+                        <div class="order-step-icon">👤</div>
+                        <div>
+                            <h2 class="order-step-title">Select Customer</h2>
+                            <p class="order-step-sub" id="selectedCustomerLabel">No customer selected</p>
+                        </div>
+                        <button class="step-edit-btn" id="editStep1Btn" style="display:none;" onclick="expandStep(1)">Change</button>
+                    </div>
+                    <div class="order-step-body" id="step1Body">
+                        <div class="search-field-wrap">
+                            <span class="search-icon">🔍</span>
+                            <input type="text" id="customerSearch" placeholder="Search customer by name or phone…" oninput="renderCustomerSelect(this.value)" class="premium-search-input" autocomplete="off">
+                        </div>
+                        <select id="customerSelect" onchange="handleCustomerChange()" onblur="this.size=1" class="premium-select">
+                            <option value="">— Select a Customer —</option>
+                        </select>
+                        <button class="btn-add-new" onclick="openModal('customerModal')">
+                            <span>＋</span> Add New Customer
+                        </button>
+                    </div>
+                </div>
 
-                        <div class="cart-items-container">
-                            <table class="cart-table">
-                                <thead>
-                                    <tr>
-                                        <th>Item</th>
-                                        <th>Qty</th>
-                                        <th>Price</th>
-                                        <th>Total</th>
-                                        <th></th>
-                                    </tr>
-                                </thead>
-                                <tbody id="cartBody">
-                                    <!-- Cart items will be injected here -->
-                                </tbody>
-                            </table>
-                            <div id="emptyCartMessage" class="empty-state">Cart is empty</div>
+                <!-- Step 2: Products -->
+                <div class="order-step-card glass-panel dimmed" id="order-step-2" style="pointer-events:none;">
+                    <div class="order-step-header">
+                        <div class="order-step-icon">🛒</div>
+                        <div>
+                            <h2 class="order-step-title">Add Products</h2>
+                            <p class="order-step-sub" id="cartCountLabel">0 items in cart</p>
+                        </div>
+                    </div>
+                    <div class="order-step-body" id="step2Body">
+                        <div class="product-add-row">
+                            <div class="search-field-wrap" style="flex:1;">
+                                <span class="search-icon">🔍</span>
+                                <input type="text" id="productSearch" placeholder="Search product…" oninput="renderProductSelect(this.value)" class="premium-search-input" autocomplete="off">
+                            </div>
+                        </div>
+                        <select id="productSelect" class="premium-select" onchange="this.size=1" onblur="this.size=1">
+                            <option value="">— Select a Product —</option>
+                        </select>
+                        <div class="qty-action-row">
+                            <div class="qty-stepper">
+                                <button class="qty-btn" onclick="stepQty(-1)" type="button">−</button>
+                                <input type="number" id="productQuantity" min="1" value="1" class="qty-input">
+                                <button class="qty-btn" onclick="stepQty(1)" type="button">＋</button>
+                            </div>
+                            <button class="btn-add-product" onclick="addProductToCart()">Add to Cart</button>
                         </div>
 
-                        <div class="cart-footer">
-                            <div
-                                style="display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid var(--panel-border); padding-bottom: 15px;">
-                                <input type="text" id="additionalCostReason" placeholder="Reason (e.g. Fare)"
-                                    style="flex: 2; padding: 8px; border-radius: 6px; border: 1px solid var(--panel-border); font-size: 0.9rem;"
-                                    oninput="renderCart()">
-                                <input type="number" id="additionalCostAmount" placeholder="Amount (₹)" min="0"
-                                    step="0.01"
-                                    style="flex: 1; padding: 8px; border-radius: 6px; border: 1px solid var(--panel-border); font-size: 0.9rem;"
-                                    oninput="renderCart()">
-                            </div>
-                            <div class="grand-total">
-                                <span>Grand Total:</span>
-                                <span id="grandTotalValue">₹0.00</span>
-                            </div>
-                            <button class="btn btn-success full-width" id="placeOrderBtn" onclick="placeOrder()"
-                                disabled>Place Order</button>
+                        <!-- Cart Items inline -->
+                        <div class="cart-inline" id="cartInline">
+                            <div id="emptyCartMessage" class="empty-cart-msg">Cart is empty · Add products above</div>
+                            <div id="cartItemsList" class="cart-items-list"></div>
                         </div>
-                    </section>
+
+                        <!-- Additional Cost -->
+                        <div class="additional-cost-row">
+                            <input type="text" id="additionalCostReason" placeholder="Extra charge reason (e.g. Delivery)" class="premium-input" oninput="renderCart()">
+                            <div class="add-cost-amount-wrap">
+                                <span class="currency-prefix">₹</span>
+                                <input type="number" id="additionalCostAmount" placeholder="0.00" min="0" step="0.01" class="premium-input" oninput="renderCart()">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sticky Cart Footer -->
+                <div class="sticky-cart-bar" id="stickyCartBar" style="display:none;">
+                    <div class="sticky-cart-summary">
+                        <div id="cartBarItemCount" class="cart-bar-count">0 items</div>
+                        <div id="cartBarTotal" class="cart-bar-total">₹0.00</div>
+                    </div>
+                    <button class="btn-place-order" id="placeOrderBtn" onclick="placeOrder()" disabled>
+                        Place Order →
+                    </button>
                 </div>
 
             </main>
@@ -491,7 +504,7 @@
     </nav>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=12"></script>
+    <script src="app.js?v=14"></script>
 </body>
 
 </html>
