@@ -1247,7 +1247,9 @@ async function finalizeOrderAndShare() {
 
 // --- Utility: Build bill HTML ---
 function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '', invoiceNum = '') {
-    const date = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const now = new Date();
+    const date = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
     
     const container = document.createElement('div');
     container.style.width = '800px';
@@ -1266,7 +1268,7 @@ function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advance
             <div style="text-align: right;">
                 <h2 style="margin: 0; font-size: 24px; color: #334155;">INVOICE</h2>
                 ${invoiceNum ? `<p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Invoice No: <strong>${invoiceNum}</strong></p>` : ''}
-                <p style="margin: ${invoiceNum ? '3px' : '5px'} 0 0 0; color: #64748b; font-size: 14px;">Date: <strong>${date}</strong></p>
+                <p style="margin: ${invoiceNum ? '3px' : '5px'} 0 0 0; color: #64748b; font-size: 14px;">Date: <strong>${date} ${time}</strong></p>
             </div>
         </div>
         
@@ -1281,7 +1283,7 @@ function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advance
                     <th style="padding: 12px; text-align: left; font-size: 14px; color: #475569;">#</th>
                     <th style="padding: 12px; text-align: left; font-size: 14px; color: #475569;">Item</th>
                     <th style="padding: 12px; text-align: center; font-size: 14px; color: #475569;">Qty</th>
-                    <th style="padding: 12px; text-align: right; font-size: 14px; color: #475569;">Rate</th>
+                    <th style="padding: 12px; text-align: right; font-size: 14px; color: #475569;">Rate (Incl. Taxes)</th>
                     <th style="padding: 12px; text-align: right; font-size: 14px; color: #475569;">Amount</th>
                 </tr>
             </thead>
