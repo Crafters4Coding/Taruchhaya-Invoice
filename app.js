@@ -362,6 +362,18 @@ async function cloudUpsertOrder(order) {
     }
 }
 
+async function cloudDeleteOrder(orderId) {
+    if (!supabaseClient) return;
+    try {
+        const { error } = await supabaseClient.from('orders').delete().eq('id', orderId);
+        if (error) throw error;
+        updateCloudStatus('connected');
+    } catch (err) {
+        console.error('Cloud delete failed for order:', err);
+        updateCloudStatus('error', 'Failed to delete order from cloud: ' + err.message);
+    }
+}
+
 async function cloudInsertPayment(payment) {
     if (!supabaseClient) return;
     try {
@@ -1095,15 +1107,15 @@ async function finalizeOrderAndShare() {
         cloudInsertPayment(historyRecord);
     }
 
-    // Build shareable bill text
-    const billText = buildBillText(currentCustomer.name, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason);
+    // Build shareable bill HTML
+    const billElement = buildBillHTML(currentCustomer.name, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason);
 
     // Reset inputs
     if (additionalCostAmountInput) additionalCostAmountInput.value = '';
     if (additionalCostReasonInput) additionalCostReasonInput.value = '';
 
     // Share or copy as image
-    await shareAsImage(billText, `Bill for ${currentCustomer.name}`);
+    await shareAsImage(billElement, `Bill for ${currentCustomer.name}`);
 
     // Reset UI
     cart = [];
@@ -1121,100 +1133,145 @@ async function finalizeOrderAndShare() {
     btn.disabled = false;
 }
 
-// --- Utility: Build bill text ---
-function buildBillText(customerName, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '') {
+// --- Utility: Build bill HTML ---
+function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '') {
     const date = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
-
-    // Use triple backticks for monospace formatting in WhatsApp
-    let text = "```\n";
-    text += "                     INVOICE\n";
-    text += "=================================================\n";
-    text += "Taruchhaya Enterprise\n";
-    text += "Hat-Tola Road, Pandui, Puncha, Purulia - 723151\n";
-    text += "-------------------------------------------------\n";
-    text += `Bill To: ${customerName}\n`;
-    text += `Date   : ${date}\n`;
-    text += "=================================================\n";
-
-    // Table Header
-    text += "#  Item                    Qty     Rate   Amount\n";
-    text += "-------------------------------------------------\n";
-
-    // Items
+    
+    const container = document.createElement('div');
+    container.style.width = '800px';
+    container.style.padding = '40px';
+    container.style.backgroundColor = '#ffffff';
+    container.style.fontFamily = "'Inter', sans-serif";
+    container.style.color = '#1e293b';
+    container.style.boxSizing = 'border-box';
+    
+    let html = `
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 20px;">
+            <div>
+                <h1 style="margin: 0; font-size: 28px; color: #2563eb; font-weight: 700;">Taruchhaya Enterprise</h1>
+                <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Hat-Tola Road, Pandui, Puncha, Purulia - 723151</p>
+            </div>
+            <div style="text-align: right;">
+                <h2 style="margin: 0; font-size: 24px; color: #334155;">INVOICE</h2>
+                <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Date: <strong>${date}</strong></p>
+            </div>
+        </div>
+        
+        <div style="margin-bottom: 30px;">
+            <p style="margin: 0; font-size: 14px; color: #64748b;">Billed To:</p>
+            <h3 style="margin: 5px 0 0 0; font-size: 18px; color: #1e293b;">${customerName}</h3>
+        </div>
+        
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 30px;">
+            <thead>
+                <tr style="background-color: #f8fafc; border-bottom: 2px solid #e2e8f0;">
+                    <th style="padding: 12px; text-align: left; font-size: 14px; color: #475569;">#</th>
+                    <th style="padding: 12px; text-align: left; font-size: 14px; color: #475569;">Item</th>
+                    <th style="padding: 12px; text-align: center; font-size: 14px; color: #475569;">Qty</th>
+                    <th style="padding: 12px; text-align: right; font-size: 14px; color: #475569;">Rate</th>
+                    <th style="padding: 12px; text-align: right; font-size: 14px; color: #475569;">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    
     items.forEach((item, index) => {
-        let idx = (index + 1).toString().padEnd(2);
-        let name = item.name.length > 24 ? item.name.substring(0, 21) + '...' : item.name.padEnd(24);
-        let qty = item.quantity.toString().padStart(3);
-        let rate = item.price.toFixed(2).padStart(8);
-        let amount = (item.price * item.quantity).toFixed(2).padStart(9);
-
-        text += `${idx} ${name} ${qty} ${rate} ${amount}\n`;
+        let amount = (item.price * item.quantity).toFixed(2);
+        html += `
+            <tr style="border-bottom: 1px solid #f1f5f9;">
+                <td style="padding: 12px; font-size: 14px; color: #334155;">${index + 1}</td>
+                <td style="padding: 12px; font-size: 14px; color: #334155; font-weight: 500;">${item.name}</td>
+                <td style="padding: 12px; text-align: center; font-size: 14px; color: #334155;">${item.quantity}</td>
+                <td style="padding: 12px; text-align: right; font-size: 14px; color: #334155;">₹${item.price.toFixed(2)}</td>
+                <td style="padding: 12px; text-align: right; font-size: 14px; color: #334155;">₹${amount}</td>
+            </tr>
+        `;
     });
-    text += "-------------------------------------------------\n";
-
-    // Totals
+    
     const subTotal = grandTotal - previousDue - additionalCost;
-    text += `Sub Total       : ${subTotal.toFixed(2).padStart(20)}\n`;
-
+    
+    html += `
+            </tbody>
+        </table>
+        
+        <div style="display: flex; justify-content: flex-end;">
+            <div style="width: 350px;">
+                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
+                    <span style="color: #64748b; font-size: 14px;">Sub Total</span>
+                    <span style="color: #334155; font-size: 14px; font-weight: 500;">₹${subTotal.toFixed(2)}</span>
+                </div>
+    `;
+    
     if (additionalCost > 0) {
-        let reason = additionalCostReason ? additionalCostReason.substring(0, 15) : 'Misc. Cost';
-        text += `${reason.padEnd(16)}: ${additionalCost.toFixed(2).padStart(20)}\n`;
+        let reason = additionalCostReason || 'Misc. Cost';
+        html += `
+                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
+                    <span style="color: #64748b; font-size: 14px;">${reason}</span>
+                    <span style="color: #334155; font-size: 14px; font-weight: 500;">₹${additionalCost.toFixed(2)}</span>
+                </div>
+        `;
     }
-
+    
     if (previousDue > 0) {
-        text += `Previous Due    : ${previousDue.toFixed(2).padStart(20)}\n`;
+        html += `
+                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
+                    <span style="color: #64748b; font-size: 14px;">Previous Due</span>
+                    <span style="color: #334155; font-size: 14px; font-weight: 500;">₹${previousDue.toFixed(2)}</span>
+                </div>
+        `;
     }
-
-    text += `Total           : ${grandTotal.toFixed(2).padStart(20)}\n`;
-
+    
+    html += `
+                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
+                    <span style="color: #334155; font-size: 15px; font-weight: 600;">Total</span>
+                    <span style="color: #334155; font-size: 15px; font-weight: 600;">₹${grandTotal.toFixed(2)}</span>
+                </div>
+    `;
+    
     if (advanceAmount > 0) {
-        text += `Payment Received: ${advanceAmount.toFixed(2).padStart(20)}\n`;
+        html += `
+                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
+                    <span style="color: #10b981; font-size: 14px;">Payment Received</span>
+                    <span style="color: #10b981; font-size: 14px; font-weight: 500;">-₹${advanceAmount.toFixed(2)}</span>
+                </div>
+        `;
     }
-
+    
     const balanceDue = grandTotal - advanceAmount;
-    text += "=================================================\n";
-    text += `BALANCE DUE     : ₹ ${balanceDue.toFixed(2).padStart(18)}\n`;
-    text += "=================================================\n";
-    text += "            Thanks for your business.\n";
-    text += "       Generated under Taruchhaya Systems\n";
-    text += "```";
-
-    return text;
+    
+    html += `
+                <div style="display: flex; justify-content: space-between; padding: 12px 0; border-top: 2px solid #e2e8f0; margin-top: 8px;">
+                    <span style="color: #0f172a; font-size: 18px; font-weight: 700;">Balance Due</span>
+                    <span style="color: #ef4444; font-size: 18px; font-weight: 700;">₹${balanceDue.toFixed(2)}</span>
+                </div>
+            </div>
+        </div>
+        
+        <div style="margin-top: 40px; text-align: center; border-top: 2px solid #e2e8f0; padding-top: 20px;">
+            <p style="margin: 0; font-size: 16px; color: #334155; font-weight: 500;">Thanks for your business.</p>
+            <p style="margin: 8px 0 0 0; font-size: 12px; color: #94a3b8;">Generated under Taruchhaya Systems</p>
+            <p style="margin: 2px 0 0 0; font-size: 12px; color: #94a3b8;">via Taruchhaya Invoice</p>
+        </div>
+    `;
+    
+    container.innerHTML = html;
+    return container;
 }
 
-// --- Utility: Share text as Image ---
-async function shareAsImage(text, title) {
-    // Strip backticks from text for display
-    const cleanText = text.replace(/```/g, '');
-
-    // Create an off-screen container
-    const container = document.createElement('div');
-    container.style.position = 'absolute';
-    container.style.left = '-9999px';
-    container.style.top = '-9999px';
-
-    // Style it exactly like the requested image but larger font
-    const pre = document.createElement('pre');
-    pre.textContent = cleanText;
-    pre.style.fontFamily = "'Fira Code', 'Courier New', monospace";
-    pre.style.fontSize = '24px'; // Increased size
-    pre.style.fontWeight = '500';
-    pre.style.backgroundColor = '#e6ffd9'; // Light green background
-    pre.style.color = '#004d00';
-    pre.style.padding = '40px';
-    pre.style.margin = '0';
-    pre.style.lineHeight = '1.5';
-
-    container.appendChild(pre);
-    document.body.appendChild(container);
+// --- Utility: Share HTML as Image ---
+async function shareAsImage(element, title) {
+    element.style.position = 'absolute';
+    element.style.left = '-9999px';
+    element.style.top = '-9999px';
+    document.body.appendChild(element);
 
     try {
         if (!window.html2canvas) {
             throw new Error('html2canvas not loaded');
         }
-        const canvas = await html2canvas(pre, {
+        const canvas = await html2canvas(element, {
             scale: 2, // high res
-            backgroundColor: '#e6ffd9'
+            backgroundColor: '#ffffff'
         });
 
         canvas.toBlob(async (blob) => {
@@ -1242,7 +1299,7 @@ async function shareAsImage(text, title) {
         console.error('Image generation failed', err);
         showToast('Failed to generate image. Please make sure you are online to load the image generator script.');
     } finally {
-        document.body.removeChild(container);
+        document.body.removeChild(element);
     }
 }
 
@@ -1759,6 +1816,7 @@ function renderBills() {
                     <div style="display: flex; gap: 8px;">
                         <button class="btn btn-secondary share-bill-btn" onclick="shareBill('${order.id}')" title="Share this bill">📤 Share</button>
                         <button class="btn btn-primary share-bill-btn" onclick="printInvoice('${order.id}')" title="Print Invoice">🖨️ Print</button>
+                        <button class="btn btn-danger share-bill-btn" style="padding: 0.4rem; min-width: unset;" onclick="deleteBill('${order.id}')" title="Delete Bill">🗑️</button>
                     </div>
                 </div>
                 ${itemsHtml}
@@ -1799,8 +1857,8 @@ function shareBill(orderId) {
         (customers.find(c => c.id === order.customerId) || {}).name ||
         'Customer';
 
-    const billText = buildBillText(customerName, order.items, order.totalAmount, order.previousDue || 0);
-    shareAsImage(billText, `Bill for ${customerName}`);
+    const billElement = buildBillHTML(customerName, order.items, order.totalAmount, order.previousDue || 0);
+    shareAsImage(billElement, `Bill for ${customerName}`);
 }
 
 function printInvoice(orderId) {
@@ -1947,6 +2005,32 @@ function printInvoice(orderId) {
     </body>
     </html>
     `);
+}
+
+function deleteBill(orderId) {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+
+    const customerName = order.customerName ||
+        (customers.find(c => c.id === order.customerId) || {}).name ||
+        'Customer';
+    const dateObj = new Date(order.date);
+    const dateString = dateObj.toLocaleDateString('en-IN');
+
+    showCustomConfirm(`Are you sure you want to delete the bill for ${customerName} dated ${dateString}?`).then(confirmed => {
+        if (!confirmed) return;
+
+        orders = orders.filter(o => o.id !== orderId);
+        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
+
+        // Sync delete to cloud
+        if (typeof cloudDeleteOrder === 'function') {
+            cloudDeleteOrder(orderId);
+        }
+
+        renderBills();
+        showToast('Bill deleted successfully');
+    });
 }
 
 // --- Logout ---
