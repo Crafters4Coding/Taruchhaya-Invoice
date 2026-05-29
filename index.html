@@ -263,9 +263,15 @@
                                 <input type="text" id="productSearch" placeholder="Search product…" oninput="renderProductSelect(this.value)" class="premium-search-input" autocomplete="off">
                             </div>
                         </div>
-                        <select id="productSelect" class="premium-select" onchange="this.size=1" onblur="this.size=1">
+                        <select id="productSelect" class="premium-select" onchange="handleProductChange(); this.size=1;" onblur="this.size=1">
                             <option value="">— Select a Product —</option>
                         </select>
+                        <div class="price-override-row" style="display: flex; align-items: center; gap: 0.75rem;">
+                            <div class="search-field-wrap" style="flex: 1;">
+                                <span class="search-icon">₹</span>
+                                <input type="number" id="productPriceOverride" placeholder="Override Unit Price (optional)" step="0.01" min="0" class="premium-search-input" autocomplete="off">
+                            </div>
+                        </div>
                         <div class="qty-action-row">
                             <div class="qty-stepper">
                                 <button class="qty-btn" onclick="stepQty(-1)" type="button">−</button>

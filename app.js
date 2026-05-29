@@ -741,6 +741,22 @@ async function deleteProduct(productId) {
     renderExistingProductsList();
 }
 
+function handleProductChange() {
+    const select = document.getElementById('productSelect');
+    const priceOverrideInput = document.getElementById('productPriceOverride');
+    if (!select || !priceOverrideInput) return;
+
+    const productId = select.value;
+    if (productId) {
+        const product = products.find(p => p.id === productId);
+        if (product) {
+            priceOverrideInput.value = product.price.toFixed(2);
+        }
+    } else {
+        priceOverrideInput.value = '';
+    }
+}
+
 function renderProductSelect(filterTerm = '') {
     const select = document.getElementById('productSelect');
     const currentVal = select.value;
@@ -777,6 +793,9 @@ function renderProductSelect(filterTerm = '') {
     } else {
         select.size = 1;
     }
+
+    // Synchronize price override field
+    handleProductChange();
 }
 
 function renderExistingProductsList() {
@@ -829,6 +848,7 @@ function addProductToCart() {
 
     const select = document.getElementById('productSelect');
     const qtyInput = document.getElementById('productQuantity');
+    const priceOverrideInput = document.getElementById('productPriceOverride');
 
     if (!select.value) {
         showToast('Please select a product.');
@@ -849,16 +869,26 @@ function addProductToCart() {
         return;
     }
 
-    // If already in cart, increase quantity
+    // Determine the price to use
+    let price = product.price;
+    if (priceOverrideInput && priceOverrideInput.value !== '') {
+        const overridePrice = parseFloat(priceOverrideInput.value);
+        if (!isNaN(overridePrice) && overridePrice >= 0) {
+            price = overridePrice;
+        }
+    }
+
+    // If already in cart, increase quantity and update price
     const existingItem = cart.find(item => item.productId === productId);
 
     if (existingItem) {
         existingItem.quantity += quantity;
+        existingItem.price = price;
     } else {
         cart.push({
             productId: product.id,
             name: product.name,
-            price: product.price,
+            price: price,
             quantity: quantity,
             unit: product.unit || 'pcs'
         });
@@ -867,6 +897,7 @@ function addProductToCart() {
     // Reset inputs
     select.value = '';
     qtyInput.value = '1';
+    if (priceOverrideInput) priceOverrideInput.value = '';
 
     renderCart();
 }
@@ -1008,7 +1039,10 @@ function renderCart() {
         card.innerHTML = `
             <div class="cart-item-info">
                 <div class="cart-item-name">${item.name}</div>
-                <div class="cart-item-price">₹${item.price.toFixed(2)} / ${item.unit || 'pcs'}</div>
+                <div class="cart-item-price" style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
+                    ₹<input type="number" class="cart-item-price-input" value="${item.price.toFixed(2)}" step="0.01" min="0" onchange="updateCartPrice('${item.productId}', this.value)" style="width: 75px; padding: 2px 5px; border: 1px solid var(--panel-border); border-radius: 6px; font-size: 0.85rem; font-weight: 600; background: var(--input-bg); color: var(--text-primary); outline: none;">
+                    <span style="color: var(--text-secondary); font-size: 0.85rem;">/ ${item.unit || 'pcs'}</span>
+                </div>
             </div>
             <div class="cart-item-qty-wrap">
                 <button class="cart-qty-btn" onclick="updateCartQuantity('${item.productId}', ${item.quantity - 1})" type="button">−</button>
