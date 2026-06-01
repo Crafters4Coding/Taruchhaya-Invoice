@@ -223,6 +223,12 @@
                     </div>
                 </div>
 
+                <!-- Edit Bill Banner -->
+                <div id="editBillBanner" style="display:none; background: rgba(245, 158, 11, 0.1); border: 1.5px solid #f59e0b; border-radius: 12px; padding: 12px 16px; margin-bottom: 1rem; align-items: center; justify-content: space-between; gap: 10px; font-weight: 500; width: 100%;">
+                    <span style="color: #d97706; display: flex; align-items: center; gap: 6px;">✏️ Editing Bill <strong id="editBillInvoiceNum">#TE-XXXX</strong></span>
+                    <button class="btn btn-secondary" onclick="cancelEditBill()" style="padding: 4px 12px; font-size: 0.85rem; border-color: #ef4444; color: #ef4444; background: transparent; border-radius: 8px; cursor: pointer;">Cancel Edit</button>
+                </div>
+
                 <!-- Step 1: Customer -->
                 <div class="order-step-card glass-panel" id="order-step-1">
                     <div class="order-step-header">

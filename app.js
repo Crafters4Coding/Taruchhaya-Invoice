@@ -20,6 +20,7 @@ let currentCustomer = null;
 let cart = []; // Array of { productId, quantity, price, name }
 let editingCustomerId = null;
 let editingProductId = null;
+let editingOrderId = null;
 
 function getInvoiceNumber(order) {
     if (!order || !order.id) return '';
@@ -1057,7 +1058,7 @@ function renderCart() {
 
     let previousDue = 0;
     if (currentCustomer) {
-        orders.filter(o => o.customerId === currentCustomer.id).forEach(order => {
+        orders.filter(o => o.customerId === currentCustomer.id && o.id !== editingOrderId).forEach(order => {
             previousDue += (order.totalAmount - (order.paidAmount || 0));
         });
     }
@@ -1102,15 +1103,62 @@ function placeOrder() {
 
     const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
-    let previousDue = 0;
-    orders.filter(o => o.customerId === currentCustomer.id).forEach(order => {
-        previousDue += (order.totalAmount - (order.paidAmount || 0));
-    });
-
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
     const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
     const additionalCostReasonInput = document.getElementById('additionalCostReason');
     const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
+
+    if (editingOrderId) {
+        const order = orders.find(o => o.id === editingOrderId);
+        if (!order) {
+            showToast('Error: Bill not found.', 'error');
+            return;
+        }
+        const invoiceNum = getInvoiceNumber(order);
+        document.getElementById('confirmCustomerName').textContent = `Editing Bill: ${invoiceNum} (${currentCustomer.name})`;
+        
+        let confirmText = `New Items Total: ₹${itemsTotal.toFixed(2)}`;
+        if (additionalCost > 0) {
+            const reasonDisplay = additionalCostReason ? additionalCostReason : 'Misc';
+            confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${reasonDisplay}: ₹${additionalCost.toFixed(2)}</span>`;
+        }
+        
+        const originalPreviousDue = order.previousDue || 0;
+        if (originalPreviousDue > 0) {
+            confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Original Previous Due: ₹${originalPreviousDue.toFixed(2)}</span>`;
+        }
+        
+        const newGrandTotal = itemsTotal + originalPreviousDue + additionalCost;
+        confirmText += `<br><br>New Grand Total: ₹${newGrandTotal.toFixed(2)}`;
+        
+        const diff = newGrandTotal - order.totalAmount;
+        if (diff !== 0) {
+            const diffColor = diff > 0 ? 'var(--danger-color)' : 'var(--success-color)';
+            const diffSign = diff > 0 ? '+' : '';
+            confirmText += `<br><span style="font-size:1rem; color:${diffColor}; font-weight:600;">Adjustment: ${diffSign}₹${diff.toFixed(2)}</span>`;
+        }
+        
+        document.getElementById('confirmGrandTotal').innerHTML = confirmText;
+        
+        const paymentRecSection = document.querySelector('#confirmOrderModal div[style*="background: rgba(0, 112, 243, 0.05)"]');
+        if (paymentRecSection) {
+            paymentRecSection.style.display = 'none';
+        }
+        
+        const saveBtn = document.getElementById('saveAndShareBtn');
+        if (saveBtn) {
+            saveBtn.innerHTML = '✨ Save Changes & Share';
+            saveBtn.setAttribute('onclick', 'finalizeBillEdits()');
+        }
+        
+        openModal('confirmOrderModal');
+        return;
+    }
+
+    let previousDue = 0;
+    orders.filter(o => o.customerId === currentCustomer.id).forEach(order => {
+        previousDue += (order.totalAmount - (order.paidAmount || 0));
+    });
 
     const grandTotal = itemsTotal + previousDue + additionalCost;
 
@@ -1186,7 +1234,7 @@ async function finalizeOrderAndShare() {
     let previousDue = 0;
     orders.filter(o => o.customerId === currentCustomer.id).forEach(order => {
         const pending = order.totalAmount - (order.paidAmount || 0);
-        if (pending > 0) {
+        if (pending !== 0) {
             previousDue += pending;
             order.paidAmount = order.totalAmount; // Mark as paid/adjusted
             order.adjustedWithOrderId = newOrderId;
@@ -1277,6 +1325,232 @@ async function finalizeOrderAndShare() {
     closeModal('confirmOrderModal');
     btn.innerHTML = originalText;
     btn.disabled = false;
+}
+
+// --- Edit Bill Logic ---
+
+function startEditBill(orderId) {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) {
+        showToast('Bill not found.', 'error');
+        return;
+    }
+    
+    editingOrderId = orderId;
+    currentCustomer = customers.find(c => c.id === order.customerId);
+    
+    if (!currentCustomer) {
+        // Fallback if customer was deleted but we have snapshotted name
+        currentCustomer = { id: order.customerId, name: order.customerName || 'Unknown Customer' };
+    }
+    
+    // Load items into cart
+    cart = JSON.parse(JSON.stringify(order.items || []));
+    
+    // Set additional cost
+    const additionalCostAmountInput = document.getElementById('additionalCostAmount');
+    if (additionalCostAmountInput) {
+        additionalCostAmountInput.value = order.additionalCost || '';
+    }
+    const additionalCostReasonInput = document.getElementById('additionalCostReason');
+    if (additionalCostReasonInput) {
+        additionalCostReasonInput.value = order.additionalCostReason || '';
+    }
+    
+    // Show banner
+    const banner = document.getElementById('editBillBanner');
+    if (banner) {
+        banner.style.display = 'flex';
+        document.getElementById('editBillInvoiceNum').textContent = getInvoiceNumber(order);
+    }
+    
+    // Set customer selection dropdown value
+    const custSelect = document.getElementById('customerSelect');
+    if (custSelect) {
+        // If customer is not in customers array, temporarily add an option for them
+        if (!customers.some(c => c.id === currentCustomer.id)) {
+            const opt = document.createElement('option');
+            opt.value = currentCustomer.id;
+            opt.textContent = currentCustomer.name;
+            custSelect.appendChild(opt);
+        }
+        custSelect.value = currentCustomer.id;
+    }
+    
+    // Switch to order view
+    switchView('mainView');
+    
+    // Re-render cart and update steps
+    renderCart();
+    
+    // Change Place Order button label
+    const placeOrderBtn = document.getElementById('placeOrderBtn');
+    if (placeOrderBtn) {
+        placeOrderBtn.innerHTML = 'Review Changes →';
+    }
+}
+
+function cancelEditBill() {
+    editingOrderId = null;
+    currentCustomer = null;
+    cart = [];
+    
+    // Reset fields
+    const additionalCostAmountInput = document.getElementById('additionalCostAmount');
+    if (additionalCostAmountInput) additionalCostAmountInput.value = '';
+    const additionalCostReasonInput = document.getElementById('additionalCostReason');
+    if (additionalCostReasonInput) additionalCostReasonInput.value = '';
+    
+    const custSelect = document.getElementById('customerSelect');
+    if (custSelect) custSelect.value = '';
+    
+    // Hide banner
+    const banner = document.getElementById('editBillBanner');
+    if (banner) banner.style.display = 'none';
+    
+    // Reset headers/buttons
+    const placeOrderBtn = document.getElementById('placeOrderBtn');
+    if (placeOrderBtn) placeOrderBtn.innerHTML = 'Place Order →';
+    
+    renderCart();
+    switchView('billsView');
+}
+
+async function propagateOrderTotalChange(orderId, difference) {
+    if (difference === 0) return;
+    
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    
+    if (order.adjustedWithOrderId) {
+        const adjustingOrder = orders.find(o => o.id === order.adjustedWithOrderId);
+        if (adjustingOrder) {
+            adjustingOrder.previousDue = (adjustingOrder.previousDue || 0) + difference;
+            adjustingOrder.totalAmount = (adjustingOrder.totalAmount || 0) + difference;
+            
+            if (adjustingOrder.adjustedWithOrderId) {
+                adjustingOrder.paidAmount = adjustingOrder.totalAmount;
+                await propagateOrderTotalChange(adjustingOrder.id, difference);
+            }
+            
+            await cloudUpsertOrder(adjustingOrder);
+        }
+    }
+}
+
+async function finalizeBillEdits() {
+    if (!editingOrderId) return;
+    
+    const btn = document.getElementById('saveAndShareBtn');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '⏳ Saving...';
+    btn.disabled = true;
+
+    // Small delay for interactive feel
+    await new Promise(r => setTimeout(r, 400));
+
+    const order = orders.find(o => o.id === editingOrderId);
+    if (!order) {
+        closeModal('confirmOrderModal');
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        showToast('Error: Bill not found.', 'error');
+        return;
+    }
+
+    const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const additionalCostAmountInput = document.getElementById('additionalCostAmount');
+    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+    const additionalCostReasonInput = document.getElementById('additionalCostReason');
+    const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
+
+    const newGrandTotal = itemsTotal + (order.previousDue || 0) + additionalCost;
+    const difference = newGrandTotal - order.totalAmount;
+
+    // Update order values
+    order.items = [...cart];
+    order.itemsTotal = itemsTotal;
+    order.additionalCost = additionalCost;
+    order.additionalCostReason = additionalCostReason;
+    order.totalAmount = newGrandTotal;
+
+    if (order.adjustedWithOrderId) {
+        // If adjusted, paidAmount must match totalAmount
+        order.paidAmount = newGrandTotal;
+    }
+
+    // Propagate changes if there is a difference
+    if (difference !== 0) {
+        await propagateOrderTotalChange(editingOrderId, difference);
+    }
+
+    // Save orders & localStorage
+    localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
+
+    // Sync updated main order to cloud
+    await cloudUpsertOrder(order);
+
+    // Build shareable bill HTML
+    const invoiceNum = getInvoiceNumber(order);
+    const billElement = buildBillHTML(
+        currentCustomer.name, 
+        cart, 
+        newGrandTotal, 
+        order.previousDue || 0, 
+        order.paidAmount || 0, 
+        additionalCost, 
+        additionalCostReason, 
+        invoiceNum
+    );
+
+    // Reset inputs
+    if (additionalCostAmountInput) additionalCostAmountInput.value = '';
+    if (additionalCostReasonInput) additionalCostReasonInput.value = '';
+
+    // Share or copy as image
+    await shareAsImage(billElement, `Updated Bill for ${currentCustomer.name}`);
+
+    // Reset editing state
+    editingOrderId = null;
+    cart = [];
+    currentCustomer = null;
+
+    const custSelect = document.getElementById('customerSelect');
+    if (custSelect) custSelect.value = '';
+
+    // Hide banner
+    const banner = document.getElementById('editBillBanner');
+    if (banner) banner.style.display = 'none';
+    
+    // Reset place order button
+    const placeOrderBtn = document.getElementById('placeOrderBtn');
+    if (placeOrderBtn) placeOrderBtn.innerHTML = 'Place Order →';
+
+    // Show advance payment inputs in confirmation modal again for future new orders
+    const paymentRecSection = document.querySelector('#confirmOrderModal div[style*="background: rgba(0, 112, 243, 0.05)"]');
+    if (paymentRecSection) {
+        paymentRecSection.style.display = 'block';
+    }
+
+    // Reset save button onclick and text
+    const saveBtn = document.getElementById('saveAndShareBtn');
+    if (saveBtn) {
+        saveBtn.innerHTML = '✨ Save & Share Bill';
+        saveBtn.setAttribute('onclick', 'finalizeOrderAndShare()');
+    }
+
+    renderCart();
+    renderBills();
+    renderHomeDashboard();
+
+    closeModal('confirmOrderModal');
+    btn.innerHTML = originalText;
+    btn.disabled = false;
+    
+    // Switch view back to bills view
+    switchView('billsView');
+    
+    showToast('Bill updated successfully!', 'success');
 }
 
 // --- Utility: Build bill HTML ---
@@ -1566,7 +1840,14 @@ function savePayment(e) {
         }
 
         if (remaining > 0) {
-            showToast(`Payment recorded. ₹${remaining.toFixed(2)} was overpaid (no pending bills for this customer).`);
+            if (custOrders.length > 0) {
+                const latestOrder = custOrders[custOrders.length - 1];
+                latestOrder.paidAmount = (latestOrder.paidAmount || 0) + remaining;
+                cloudUpsertOrder(latestOrder);
+                showToast(`Payment recorded. ₹${remaining.toFixed(2)} applied as advance credit to latest bill.`);
+            } else {
+                showToast(`Payment recorded. ₹${remaining.toFixed(2)} was overpaid (no past bills to apply credit to).`);
+            }
         }
     }
 
@@ -1976,7 +2257,8 @@ function renderBills() {
                         <div style="font-weight: 700; color: var(--accent-color); font-size: 0.95rem; margin-bottom: 2px;"># ${invoiceNum}</div>
                         <span class="bill-date">${dateString}</span>
                     </div>
-                    <div style="display: flex; gap: 8px;">
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button class="btn btn-secondary share-bill-btn" onclick="startEditBill('${order.id}')" title="Edit this bill">✏️ Edit</button>
                         <button class="btn btn-secondary share-bill-btn" onclick="shareBill('${order.id}')" title="Share this bill">📤 Share</button>
                         <button class="btn btn-primary share-bill-btn" onclick="printInvoice('${order.id}')" title="Print Invoice">🖨️ Print</button>
                         <button class="btn btn-danger share-bill-btn" style="padding: 0.4rem; min-width: unset;" onclick="deleteBill('${order.id}')" title="Delete Bill">🗑️</button>
