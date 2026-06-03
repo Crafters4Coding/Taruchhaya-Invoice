@@ -1293,7 +1293,8 @@ async function finalizeOrderAndShare() {
             customerName: currentCustomer.name,
             amount: advanceAmount,
             mode: advanceModeInput ? advanceModeInput.value : 'UPI',
-            date: new Date().toISOString()
+            date: new Date().toISOString(),
+            orderIds: [newOrderId]
         };
         paymentHistory.push(historyRecord);
         localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
@@ -1730,34 +1731,63 @@ async function shareAsImage(element, title) {
 function handlePaymentCustomerChange() {
     const custSelect = document.getElementById('paymentCustomerSelect');
     const amountInput = document.getElementById('paymentAmount');
+    const invoiceGroup = document.getElementById('paymentInvoiceGroup');
+    const dateGroup = document.getElementById('paymentDateGroup');
+    const invoiceIdInput = document.getElementById('paymentDisplayInvoiceId');
+    const dateInput = document.getElementById('paymentInvoiceDate');
+    const billInput = document.getElementById('paymentBillId');
+
+    if (billInput) billInput.value = '';
 
     if (custSelect.value === 'add_new') {
         openModal('customerModal');
         custSelect.value = '';
-        amountInput.value = '';
+        if (amountInput) amountInput.value = '';
+        if (invoiceGroup) invoiceGroup.style.display = 'none';
+        if (dateGroup) dateGroup.style.display = 'none';
         return;
     }
 
     if (!custSelect.value) {
-        amountInput.value = '';
+        if (amountInput) amountInput.value = '';
+        if (invoiceGroup) invoiceGroup.style.display = 'none';
+        if (dateGroup) dateGroup.style.display = 'none';
         return;
     }
 
     const customerId = custSelect.value;
     const custOrders = orders.filter(o => o.customerId === customerId);
     let totalDue = 0;
+    const unpaidOrders = [];
 
     custOrders.forEach(order => {
-        totalDue += (order.totalAmount - (order.paidAmount || 0));
+        const due = order.totalAmount - (order.paidAmount || 0);
+        if (due > 0) {
+            totalDue += due;
+            unpaidOrders.push(order);
+        }
     });
 
-    amountInput.value = totalDue > 0 ? totalDue.toFixed(2) : '';
+    if (amountInput) amountInput.value = totalDue > 0 ? totalDue.toFixed(2) : '';
+
+    if (unpaidOrders.length > 0) {
+        if (invoiceIdInput) invoiceIdInput.value = unpaidOrders.map(o => getInvoiceNumber(o)).join(', ');
+        if (dateInput) dateInput.value = unpaidOrders.map(o => new Date(o.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })).join(', ');
+        if (invoiceGroup) invoiceGroup.style.display = 'block';
+        if (dateGroup) dateGroup.style.display = 'block';
+    } else {
+        if (invoiceGroup) invoiceGroup.style.display = 'none';
+        if (dateGroup) dateGroup.style.display = 'none';
+    }
 }
 
 function openPaymentModal(orderId = null) {
     const custSelect = document.getElementById('paymentCustomerSelect');
-    const billGroup = document.getElementById('paymentBillGroup');
     const billInput = document.getElementById('paymentBillId');
+    const invoiceGroup = document.getElementById('paymentInvoiceGroup');
+    const dateGroup = document.getElementById('paymentDateGroup');
+    const invoiceIdInput = document.getElementById('paymentDisplayInvoiceId');
+    const dateInput = document.getElementById('paymentInvoiceDate');
     const amountInput = document.getElementById('paymentAmount');
 
     custSelect.innerHTML = '<option value="">-- Select Customer --</option>';
@@ -1779,17 +1809,23 @@ function openPaymentModal(orderId = null) {
         if (order) {
             custSelect.value = order.customerId;
             custSelect.disabled = true;
-            billGroup.style.display = 'block';
-            billInput.value = order.id;
+            if (billInput) billInput.value = order.id;
+            
+            if (invoiceIdInput) invoiceIdInput.value = getInvoiceNumber(order);
+            if (dateInput) dateInput.value = new Date(order.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+            if (invoiceGroup) invoiceGroup.style.display = 'block';
+            if (dateGroup) dateGroup.style.display = 'block';
+            
             const pending = order.totalAmount - (order.paidAmount || 0);
-            amountInput.value = pending > 0 ? pending.toFixed(2) : 0;
+            if (amountInput) amountInput.value = pending > 0 ? pending.toFixed(2) : 0;
         }
     } else {
         custSelect.disabled = false;
         custSelect.value = '';
-        billGroup.style.display = 'none';
-        billInput.value = '';
-        amountInput.value = '';
+        if (billInput) billInput.value = '';
+        if (invoiceGroup) invoiceGroup.style.display = 'none';
+        if (dateGroup) dateGroup.style.display = 'none';
+        if (amountInput) amountInput.value = '';
     }
 
     openModal('paymentModal');
@@ -1812,10 +1848,13 @@ function savePayment(e) {
         return;
     }
 
+    const affectedOrders = [];
+
     if (orderId) {
         const order = orders.find(o => o.id === orderId);
         if (order) {
             order.paidAmount = (order.paidAmount || 0) + amount;
+            affectedOrders.push(orderId);
             // Sync updated order to cloud
             cloudUpsertOrder(order);
         }
@@ -1834,6 +1873,7 @@ function savePayment(e) {
                 const pay = Math.min(pending, remaining);
                 order.paidAmount = (order.paidAmount || 0) + pay;
                 remaining -= pay;
+                affectedOrders.push(order.id);
                 // Sync updated order to cloud
                 cloudUpsertOrder(order);
             }
@@ -1843,6 +1883,7 @@ function savePayment(e) {
             if (custOrders.length > 0) {
                 const latestOrder = custOrders[custOrders.length - 1];
                 latestOrder.paidAmount = (latestOrder.paidAmount || 0) + remaining;
+                affectedOrders.push(latestOrder.id);
                 cloudUpsertOrder(latestOrder);
                 showToast(`Payment recorded. ₹${remaining.toFixed(2)} applied as advance credit to latest bill.`);
             } else {
@@ -1858,7 +1899,8 @@ function savePayment(e) {
         customerName: (customers.find(c => c.id === customerId) || {}).name || 'Unknown',
         amount: amount,
         mode: paymentMode,
-        date: new Date().toISOString()
+        date: new Date().toISOString(),
+        orderIds: [...new Set(affectedOrders)]
     };
     paymentHistory.push(historyRecord);
     localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
@@ -2118,6 +2160,8 @@ function renderPaymentHistory() {
         const card = document.createElement('div');
         card.className = 'bill-card';
         card.style.marginBottom = '10px';
+        card.style.cursor = 'pointer';
+        card.onclick = () => viewPaymentBill(pay.id);
         card.innerHTML = `
             <div class="bill-card-header" style="border-bottom: none; padding-bottom: 0;">
                 <div>
@@ -2132,6 +2176,58 @@ function renderPaymentHistory() {
         `;
         container.appendChild(card);
     });
+}
+
+function viewPaymentBill(paymentId) {
+    const pay = paymentHistory.find(p => p.id === paymentId);
+    if (!pay) return;
+
+    let targetOrderId = null;
+    if (pay.orderIds && pay.orderIds.length > 0) {
+        targetOrderId = pay.orderIds[pay.orderIds.length - 1];
+    } else {
+        const custOrders = orders.filter(o => o.customerId === pay.customerId && new Date(o.date) <= new Date(pay.date));
+        if (custOrders.length > 0) {
+            targetOrderId = custOrders[custOrders.length - 1].id;
+        }
+    }
+
+    if (targetOrderId) {
+        showBillPreviewModal(targetOrderId);
+    } else {
+        showToast('No specific bill found for this payment.');
+    }
+}
+
+function showBillPreviewModal(orderId) {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+
+    const customerName = order.customerName ||
+        (customers.find(c => c.id === order.customerId) || {}).name ||
+        'Customer';
+    const invoiceNum = getInvoiceNumber(order);
+    const billElement = buildBillHTML(customerName, order.items, order.totalAmount, order.previousDue || 0, order.paidAmount || 0, order.additionalCost || 0, order.additionalCostReason || '', invoiceNum);
+
+    const previewContent = document.getElementById('billPreviewContent');
+    if (!previewContent) return;
+    
+    previewContent.innerHTML = '';
+    
+    // Convert styles from buildBillHTML element to be responsive inside modal
+    billElement.style.position = 'relative';
+    billElement.style.left = '0';
+    billElement.style.top = '0';
+    billElement.style.width = '100%';
+    
+    previewContent.appendChild(billElement);
+    
+    const printBtn = document.getElementById('previewPrintBtn');
+    if (printBtn) {
+        printBtn.onclick = () => printInvoice(orderId);
+    }
+    
+    openModal('billPreviewModal');
 }
 
 // --- Bills Management ---

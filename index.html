@@ -471,9 +471,14 @@
                         <option value="">-- Select Customer --</option>
                     </select>
                 </div>
-                <div class="form-group" id="paymentBillGroup" style="display:none;">
-                    <label>Applying to Bill ID</label>
-                    <input type="text" id="paymentBillId" readonly disabled style="opacity:0.7;">
+                <input type="hidden" id="paymentBillId">
+                <div class="form-group" id="paymentInvoiceGroup" style="display:none;">
+                    <label>Invoice ID</label>
+                    <input type="text" id="paymentDisplayInvoiceId" readonly disabled style="opacity:0.7; background-color: #f1f5f9;">
+                </div>
+                <div class="form-group" id="paymentDateGroup" style="display:none;">
+                    <label>Invoice Date</label>
+                    <input type="text" id="paymentInvoiceDate" readonly disabled style="opacity:0.7; background-color: #f1f5f9;">
                 </div>
                 <div class="form-group">
                     <label for="paymentAmount">Amount (₹)</label>
@@ -490,6 +495,23 @@
                 </div>
                 <button type="submit" class="btn btn-primary full-width">Save Payment</button>
             </form>
+        </div>
+    </div>
+
+    <!-- Bill Preview Modal -->
+    <div id="billPreviewModal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 850px; width: 95%; max-height: 90vh; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="margin: 0;">Bill Preview</h2>
+                <span class="close" onclick="closeModal('billPreviewModal')" style="position: static;">&times;</span>
+            </div>
+            <div id="billPreviewContent" style="overflow-y: auto; flex: 1; background: white; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; zoom: 0.9;">
+                <!-- Bill HTML injected here -->
+            </div>
+            <div style="margin-top: 15px; display: flex; justify-content: flex-end; gap: 10px;">
+                <button class="btn btn-secondary" onclick="closeModal('billPreviewModal')">Close</button>
+                <button class="btn btn-primary" id="previewPrintBtn">🖨️ Print</button>
+            </div>
         </div>
     </div>
 
