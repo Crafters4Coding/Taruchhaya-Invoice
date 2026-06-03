@@ -934,13 +934,6 @@ function updateCartPrice(productId, newPrice) {
     }
 }
 
-// --- Order Step UI Helpers ---
-function stepQty(delta) {
-    const input = document.getElementById('productQuantity');
-    const val = parseInt(input.value, 10) || 1;
-    input.value = Math.max(1, val + delta);
-}
-
 function expandStep(stepNum) {
     if (stepNum === 1) {
         document.getElementById('step1Body').style.display = 'flex';
