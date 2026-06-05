@@ -140,7 +140,7 @@ async function loadCloudData() {
             console.log('Database is empty. Migrating local data to Supabase...');
 
             if (localCust.length > 0) {
-                const mapCust = localCust.map(c => ({ id: c.id, name: c.name, phone: c.phone || '', created_at: c.createdAt || new Date().toISOString() }));
+                const mapCust = localCust.map(c => ({ id: c.id, name: c.name, phone: c.phone || '', address: c.address || '', created_at: c.createdAt || new Date().toISOString() }));
                 const { error } = await supabaseClient.from('customers').insert(mapCust);
                 if (error) throw error;
             }
@@ -193,6 +193,7 @@ async function loadCloudData() {
             id: r.id,
             name: r.name,
             phone: r.phone || '',
+            address: r.address || '',
             createdAt: r.created_at
         }));
 
@@ -306,6 +307,7 @@ async function cloudUpsertCustomer(customer) {
             id: customer.id,
             name: customer.name,
             phone: customer.phone || '',
+            address: customer.address || '',
             created_at: customer.createdAt || new Date().toISOString()
         });
         if (error) throw error;
@@ -456,6 +458,8 @@ function closeModal(modalId) {
         editingCustomerId = null;
         document.getElementById('newCustomerName').value = '';
         document.getElementById('newCustomerPhone').value = '';
+        const addressInput = document.getElementById('newCustomerAddress');
+        if (addressInput) addressInput.value = '';
         const title = document.querySelector('#customerModal h2');
         if (title) title.textContent = 'Add New Customer';
         const btn = document.querySelector('#customerForm button[type="submit"]');
@@ -488,6 +492,8 @@ function editCustomer(id) {
     editingCustomerId = id;
     document.getElementById('newCustomerName').value = customer.name;
     document.getElementById('newCustomerPhone').value = customer.phone || '';
+    const addressInput = document.getElementById('newCustomerAddress');
+    if (addressInput) addressInput.value = customer.address || '';
     const title = document.querySelector('#customerModal h2');
     if (title) title.textContent = 'Edit Customer';
     const btn = document.querySelector('#customerForm button[type="submit"]');
@@ -499,15 +505,21 @@ function saveCustomer(e) {
     e.preventDefault();
     const nameInput = document.getElementById('newCustomerName');
     const phoneInput = document.getElementById('newCustomerPhone');
+    const addressInput = document.getElementById('newCustomerAddress');
 
     const name = nameInput.value.trim();
-    if (!name) return;
+    const phone = phoneInput.value.trim();
+    if (!name || !phone) {
+        showToast('Customer Name and Phone Number are required.');
+        return;
+    }
 
     if (editingCustomerId) {
         const customer = customers.find(c => c.id === editingCustomerId);
         if (customer) {
             customer.name = name;
-            customer.phone = phoneInput.value.trim();
+            customer.phone = phone;
+            customer.address = addressInput ? addressInput.value.trim() : '';
             // Sync edited customer to cloud
             cloudUpsertCustomer(customer);
         }
@@ -515,7 +527,8 @@ function saveCustomer(e) {
         const newCustomer = {
             id: 'cust_' + Date.now(),
             name: name,
-            phone: phoneInput.value.trim(),
+            phone: phone,
+            address: addressInput ? addressInput.value.trim() : '',
             createdAt: new Date().toISOString()
         };
         customers.push(newCustomer);
@@ -1059,7 +1072,11 @@ function renderCart() {
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
     const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
 
-    const finalTotal = grandTotal + previousDue + additionalCost;
+    let rawFinalTotal = grandTotal + previousDue + additionalCost;
+    let finalTotal = rawFinalTotal;
+    if (rawFinalTotal % 1 !== 0) {
+        finalTotal = Math.round(rawFinalTotal);
+    }
 
     if (cartBarTotal) cartBarTotal.textContent = `₹${finalTotal.toFixed(2)}`;
     if (cartBarItemCount) {
@@ -1121,7 +1138,18 @@ function placeOrder() {
             confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Original Previous Due: ₹${originalPreviousDue.toFixed(2)}</span>`;
         }
         
-        const newGrandTotal = itemsTotal + originalPreviousDue + additionalCost;
+        let rawNewGrandTotal = itemsTotal + originalPreviousDue + additionalCost;
+        let newGrandTotal = rawNewGrandTotal;
+        let roundOff = 0;
+        if (rawNewGrandTotal % 1 !== 0) {
+            newGrandTotal = Math.round(rawNewGrandTotal);
+            roundOff = newGrandTotal - rawNewGrandTotal;
+        }
+
+        if (Math.abs(roundOff) > 0.001) {
+            confirmText += `<br><span style="font-size:1rem; color:#64748b;">Round Off: ₹${roundOff > 0 ? '+' : ''}${roundOff.toFixed(2)}</span>`;
+        }
+        
         confirmText += `<br><br>New Grand Total: ₹${newGrandTotal.toFixed(2)}`;
         
         const diff = newGrandTotal - order.totalAmount;
@@ -1153,7 +1181,13 @@ function placeOrder() {
         previousDue += (order.totalAmount - (order.paidAmount || 0));
     });
 
-    const grandTotal = itemsTotal + previousDue + additionalCost;
+    let rawGrandTotal = itemsTotal + previousDue + additionalCost;
+    let grandTotal = rawGrandTotal;
+    let roundOff = 0;
+    if (rawGrandTotal % 1 !== 0) {
+        grandTotal = Math.round(rawGrandTotal);
+        roundOff = grandTotal - rawGrandTotal;
+    }
 
     document.getElementById('confirmCustomerName').textContent = `Customer: ${currentCustomer.name}`;
     let confirmText = `Items Total: ₹${itemsTotal.toFixed(2)}`;
@@ -1163,6 +1197,9 @@ function placeOrder() {
     }
     if (previousDue > 0) {
         confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Previous Due: ₹${previousDue.toFixed(2)}</span>`;
+    }
+    if (Math.abs(roundOff) > 0.001) {
+        confirmText += `<br><span style="font-size:1rem; color:#64748b;">Round Off: ₹${roundOff > 0 ? '+' : ''}${roundOff.toFixed(2)}</span>`;
     }
     confirmText += `<br><br>Grand Total: ₹${grandTotal.toFixed(2)}`;
     document.getElementById('confirmGrandTotal').innerHTML = confirmText;
@@ -1241,7 +1278,11 @@ async function finalizeOrderAndShare() {
     const additionalCostReasonInput = document.getElementById('additionalCostReason');
     const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
 
-    const grandTotal = itemsTotal + previousDue + additionalCost;
+    let rawGrandTotal = itemsTotal + previousDue + additionalCost;
+    let grandTotal = rawGrandTotal;
+    if (rawGrandTotal % 1 !== 0) {
+        grandTotal = Math.round(rawGrandTotal);
+    }
 
     const advancePaymentInput = document.getElementById('advancePaymentAmount');
     const advanceModeInput = document.getElementById('advancePaymentMode');
@@ -1262,6 +1303,7 @@ async function finalizeOrderAndShare() {
         id: newOrderId,
         customerId: currentCustomer.id,
         customerName: currentCustomer.name, // Snapshot name in case customer is later deleted
+        customerAddress: currentCustomer.address || '',
         items: [...cart],
         itemsTotal: itemsTotal,
         previousDue: previousDue,
@@ -1297,7 +1339,7 @@ async function finalizeOrderAndShare() {
 
     // Build shareable bill HTML
     const invoiceNum = 'TE-' + nextInvoiceNum;
-    const billElement = buildBillHTML(currentCustomer.name, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason, invoiceNum);
+    const billElement = buildBillHTML(currentCustomer.name, currentCustomer.address, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason, invoiceNum);
 
     // Reset inputs
     if (additionalCostAmountInput) additionalCostAmountInput.value = '';
@@ -1458,7 +1500,11 @@ async function finalizeBillEdits() {
     const additionalCostReasonInput = document.getElementById('additionalCostReason');
     const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
 
-    const newGrandTotal = itemsTotal + (order.previousDue || 0) + additionalCost;
+    let rawNewGrandTotal = itemsTotal + (order.previousDue || 0) + additionalCost;
+    let newGrandTotal = rawNewGrandTotal;
+    if (rawNewGrandTotal % 1 !== 0) {
+        newGrandTotal = Math.round(rawNewGrandTotal);
+    }
     const difference = newGrandTotal - order.totalAmount;
 
     // Update order values
@@ -1487,7 +1533,8 @@ async function finalizeBillEdits() {
     // Build shareable bill HTML
     const invoiceNum = getInvoiceNumber(order);
     const billElement = buildBillHTML(
-        currentCustomer.name, 
+        currentCustomer.name,
+        currentCustomer.address,
         cart, 
         newGrandTotal, 
         order.previousDue || 0, 
@@ -1548,7 +1595,7 @@ async function finalizeBillEdits() {
 }
 
 // --- Utility: Build bill HTML ---
-function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '', invoiceNum = '') {
+function buildBillHTML(customerName, customerAddress, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '', invoiceNum = '') {
     const now = new Date();
     const date = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
     const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
@@ -1577,6 +1624,7 @@ function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advance
         <div style="margin-bottom: 30px;">
             <p style="margin: 0; font-size: 14px; color: #64748b;">Billed To:</p>
             <h3 style="margin: 5px 0 0 0; font-size: 18px; color: #1e293b;">${customerName}</h3>
+            ${customerAddress ? `<p style="margin: 3px 0 0 0; font-size: 14px; color: #64748b; white-space: pre-wrap;">${customerAddress}</p>` : ''}
         </div>
         
         <table style="width: 100%; border-collapse: collapse; margin-bottom: 30px;">
@@ -1592,20 +1640,24 @@ function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advance
             <tbody>
     `;
     
+    let subTotal = 0;
     items.forEach((item, index) => {
-        let amount = (item.price * item.quantity).toFixed(2);
+        let itemAmount = item.price * item.quantity;
+        subTotal += itemAmount;
+        let amountStr = itemAmount.toFixed(2);
         html += `
             <tr style="border-bottom: 1px solid #f1f5f9;">
                 <td style="padding: 12px; font-size: 14px; color: #334155;">${index + 1}</td>
                 <td style="padding: 12px; font-size: 14px; color: #334155; font-weight: 500;">${item.name}</td>
                 <td style="padding: 12px; text-align: center; font-size: 14px; color: #334155;">${item.quantity}</td>
                 <td style="padding: 12px; text-align: right; font-size: 14px; color: #334155;">₹${item.price.toFixed(2)}</td>
-                <td style="padding: 12px; text-align: right; font-size: 14px; color: #334155;">₹${amount}</td>
+                <td style="padding: 12px; text-align: right; font-size: 14px; color: #334155;">₹${amountStr}</td>
             </tr>
         `;
     });
     
-    const subTotal = grandTotal - previousDue - additionalCost;
+    const rawTotal = subTotal + previousDue + additionalCost;
+    const roundOff = grandTotal - rawTotal;
     
     html += `
             </tbody>
@@ -1634,6 +1686,15 @@ function buildBillHTML(customerName, items, grandTotal, previousDue = 0, advance
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
                     <span style="color: #64748b; font-size: 14px;">Previous Due</span>
                     <span style="color: #334155; font-size: 14px; font-weight: 500;">₹${previousDue.toFixed(2)}</span>
+                </div>
+        `;
+    }
+    
+    if (Math.abs(roundOff) > 0.001) {
+        html += `
+                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
+                    <span style="color: #64748b; font-size: 14px;">Round Off</span>
+                    <span style="color: #334155; font-size: 14px; font-weight: 500;">₹${roundOff > 0 ? '+' : ''}${roundOff.toFixed(2)}</span>
                 </div>
         `;
     }
@@ -2196,11 +2257,11 @@ function showBillPreviewModal(orderId) {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
 
-    const customerName = order.customerName ||
-        (customers.find(c => c.id === order.customerId) || {}).name ||
-        'Customer';
+    const customer = customers.find(c => c.id === order.customerId) || {};
+    const customerName = order.customerName || customer.name || 'Customer';
+    const customerAddress = order.customerAddress || customer.address || '';
     const invoiceNum = getInvoiceNumber(order);
-    const billElement = buildBillHTML(customerName, order.items, order.totalAmount, order.previousDue || 0, order.paidAmount || 0, order.additionalCost || 0, order.additionalCostReason || '', invoiceNum);
+    const billElement = buildBillHTML(customerName, customerAddress, order.items, order.totalAmount, order.previousDue || 0, order.paidAmount || 0, order.additionalCost || 0, order.additionalCostReason || '', invoiceNum);
 
     const previewContent = document.getElementById('billPreviewContent');
     if (!previewContent) return;
@@ -2387,12 +2448,12 @@ function shareBill(orderId) {
         return;
     }
 
-    const customerName = order.customerName ||
-        (customers.find(c => c.id === order.customerId) || {}).name ||
-        'Customer';
+    const customer = customers.find(c => c.id === order.customerId) || {};
+    const customerName = order.customerName || customer.name || 'Customer';
+    const customerAddress = order.customerAddress || customer.address || '';
 
     const invoiceNum = getInvoiceNumber(order);
-    const billElement = buildBillHTML(customerName, order.items, order.totalAmount, order.previousDue || 0, order.paidAmount || 0, order.additionalCost || 0, order.additionalCostReason || '', invoiceNum);
+    const billElement = buildBillHTML(customerName, customerAddress, order.items, order.totalAmount, order.previousDue || 0, order.paidAmount || 0, order.additionalCost || 0, order.additionalCostReason || '', invoiceNum);
     shareAsImage(billElement, `Bill for ${customerName}`);
 }
 
@@ -2400,8 +2461,9 @@ function printInvoice(orderId) {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
 
-    const customerName = order.customerName ||
-        (customers.find(c => c.id === order.customerId) || {}).name || 'Customer';
+    const customer = customers.find(c => c.id === order.customerId) || {};
+    const customerName = order.customerName || customer.name || 'Customer';
+    const customerAddress = order.customerAddress || customer.address || '';
 
     const dateObj = new Date(order.date);
     const dateString = dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -2478,6 +2540,7 @@ function printInvoice(orderId) {
             <div class="bill-to">
                 <h3>Bill To</h3>
                 <strong>${customerName}</strong><br>
+                ${customerAddress ? `${customerAddress.replace(/\\n/g, '<br>')}<br>` : ''}
                 Customer ID: ${order.customerId}<br>
             </div>
             <div>
