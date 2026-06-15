@@ -1,7 +1,7 @@
 import http.server
 import socketserver
 
-PORT = 8745
+PORT = 8746
 
 class NoCacheHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {
@@ -24,6 +24,7 @@ class NoCacheHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Expires', '0')
         super().end_headers()
 
+socketserver.TCPServer.allow_reuse_address = True
 with socketserver.TCPServer(("", PORT), NoCacheHTTPRequestHandler) as httpd:
     print(f"Serving at http://localhost:{PORT}")
     print(f"Open: http://localhost:{PORT}/index.html")

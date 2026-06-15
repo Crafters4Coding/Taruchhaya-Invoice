@@ -241,7 +241,7 @@ async function loadCloudData() {
         // Re-render UI
         renderCustomerSelect();
         renderProductSelect();
-        renderExistingProductsList();
+        if (typeof renderProductsList === 'function') renderProductsList();
         renderBills();
         renderCart();
 
@@ -422,7 +422,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     renderCustomerSelect();
     renderProductSelect();
-    renderExistingProductsList();
+    if (typeof renderProductsList === 'function') renderProductsList();
     renderBills();
     renderCart(); // Ensure empty state is shown on load
 
@@ -684,6 +684,7 @@ function editProduct(id) {
     if (title) title.textContent = 'Edit Product';
     const btn = document.querySelector('#productForm button[type="submit"]');
     if (btn) btn.textContent = 'Update Product';
+    openModal('productModal');
 }
 
 function saveProduct(e) {
@@ -710,11 +711,6 @@ function saveProduct(e) {
             // Sync edited product to cloud
             cloudUpsertProduct(product);
         }
-        editingProductId = null;
-        const title = document.querySelector('#productModal h2');
-        if (title) title.textContent = 'Add New Product';
-        const btn = document.querySelector('#productForm button[type="submit"]');
-        if (btn) btn.textContent = 'Save Product';
     } else {
         const newProduct = {
             id: 'prod_' + Date.now(),
@@ -730,12 +726,11 @@ function saveProduct(e) {
     localStorage.setItem('taruchhaya_products', JSON.stringify(products));
 
     renderProductSelect();
-    renderExistingProductsList();
+    if (typeof renderProductsList === 'function') {
+        renderProductsList();
+    }
 
-    nameInput.value = '';
-    priceInput.value = '';
-    if (unitInput) unitInput.value = 'pcs';
-    // Don't close modal — allow adding multiple products
+    closeModal('productModal');
 }
 
 async function deleteProduct(productId) {
@@ -752,7 +747,9 @@ async function deleteProduct(productId) {
     cloudDeleteProduct(productId);
 
     renderProductSelect();
-    renderExistingProductsList();
+    if (typeof renderProductsList === 'function') {
+        renderProductsList();
+    }
 }
 
 function handleProductChange() {
@@ -812,44 +809,66 @@ function renderProductSelect(filterTerm = '') {
     handleProductChange();
 }
 
-function renderExistingProductsList() {
-    const list = document.getElementById('existingProductsList');
-    list.innerHTML = '';
+function renderProductsList() {
+    const container = document.getElementById('productsListContainer');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const searchInput = document.getElementById('productSearchInput');
+    const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
+
+    let filtered = products;
+    if (query) {
+        filtered = products.filter(prod => prod.name.toLowerCase().includes(query));
+    }
 
     if (products.length === 0) {
-        list.innerHTML = '<li style="color: var(--text-secondary); justify-content: center;">No products added yet.</li>';
+        container.innerHTML = '<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No products found.</p>';
         return;
     }
 
-    const sorted = [...products].sort((a, b) => a.name.localeCompare(b.name));
+    if (filtered.length === 0) {
+        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No products found matching "${searchInput.value.replace(/"/g, '&quot;')}".</p>`;
+        return;
+    }
 
-    sorted.forEach(prod => {
-        const li = document.createElement('li');
-        li.className = 'bill-card';
-        li.style.marginBottom = '15px';
-        li.style.display = 'flex';
-        li.style.flexDirection = 'column';
-        li.style.gap = '10px';
-        li.style.padding = '15px'; // Override simple-list default padding
-        li.style.border = '1px solid var(--panel-border)';
-        li.style.borderRadius = '8px';
-        li.style.backgroundColor = '#f8fafc'; // Match the bill-card exact background if needed
-        const unitDisplay = prod.unit ? `<span style="font-size:0.9rem; color:var(--text-color); font-weight:500; margin-left:4px;">/${prod.unit}</span>` : '';
-        li.innerHTML = `
-            <div style="font-weight: 700; font-size: 1.15rem; color: #1e293b;">${prod.name}</div>
-            <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; flex-wrap: wrap; gap: 10px; margin-top: 5px;">
+    const sortedProducts = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+
+    sortedProducts.forEach(prod => {
+        const unitDisplay = prod.unit ? ` / ${prod.unit}` : '';
+
+        const card = document.createElement('div');
+        card.className = 'bill-card';
+        card.style.marginBottom = '15px';
+        card.style.display = 'flex';
+        card.style.flexDirection = 'column';
+        card.style.gap = '10px';
+        card.style.padding = '15px';
+        card.style.border = '1px solid var(--panel-border)';
+        card.style.borderRadius = '8px';
+        card.style.backgroundColor = '#f8fafc';
+
+        card.innerHTML = `
+            <div>
+                <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #1e293b;">${prod.name}</h3>
+                <div style="margin-top: 4px; display: flex; flex-direction: column; gap: 2px;">
+                    <span style="font-size: 0.9rem; color: #64748b;">Unit: ${prod.unit || 'pcs'}</span>
+                </div>
+            </div>
+            
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 5px;">
                 <span style="color: var(--success-color); font-weight: 700; font-size: 1.1rem; flex: 1;">
                     ₹${prod.price.toFixed(2)}${unitDisplay}
                 </span>
                 
                 <div style="display: flex; gap: 12px; align-items: center;">
-                    <button class="btn btn-secondary" onclick="editProduct('${prod.id}')" title="Edit product" style="padding: 4px 12px; font-size: 0.9rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px; display: flex; align-items: center; gap: 4px;">✏️ Edit</button>
+                    <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 0.9rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px; display: flex; align-items: center; gap: 4px;" onclick="editProduct('${prod.id}')">✏️ Edit</button>
                     
-                    <button class="btn-danger" onclick="deleteProduct('${prod.id}')" title="Delete product" style="padding: 4px 8px; font-size: 0.9rem; border: none; background: transparent; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--danger-color);">🗑️ Delete</button>
+                    <button class="btn-danger" style="padding: 4px 8px; font-size: 0.9rem; border: none; background: transparent; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--danger-color);" onclick="deleteProduct('${prod.id}')">🗑️ Delete</button>
                 </div>
             </div>
         `;
-        list.appendChild(li);
+        container.appendChild(card);
     });
 }
 
@@ -2161,6 +2180,7 @@ function switchView(viewId) {
     document.getElementById('billsView').style.display = 'none';
     document.getElementById('historyView').style.display = 'none';
     document.getElementById('customersView').style.display = 'none';
+    document.getElementById('productsView').style.display = 'none';
 
     document.getElementById(viewId).style.display = '';
 
@@ -2168,6 +2188,7 @@ function switchView(viewId) {
     if (viewId === 'billsView') renderBills();
     if (viewId === 'historyView') renderPaymentHistory();
     if (viewId === 'customersView') renderCustomersList();
+    if (viewId === 'productsView') renderProductsList();
 
     // Update mobile navigation active state
     const mobileBtns = document.querySelectorAll('.mobile-nav-btn');
