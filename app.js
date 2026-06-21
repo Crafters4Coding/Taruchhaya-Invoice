@@ -1,7 +1,7 @@
 // --- Authentication Check ---
-if (localStorage.getItem('taruchhaya_loggedIn') !== 'true') {
-    window.location.href = 'login.html';
-}
+// if (localStorage.getItem('taruchhaya_loggedIn') !== 'true') {
+//     window.location.href = 'login.html';
+// }
 
 // --- State ---
 let customers = JSON.parse(localStorage.getItem('taruchhaya_customers')) || [];
@@ -258,7 +258,7 @@ async function loadCloudData() {
         }
 
         updateCloudStatus('connected');
-        
+
         // --- Setup Realtime Subscriptions ---
         if (!window.realtimeSubscribed) {
             supabaseClient
@@ -1145,18 +1145,18 @@ function placeOrder() {
         }
         const invoiceNum = getInvoiceNumber(order);
         document.getElementById('confirmCustomerName').textContent = `Editing Bill: ${invoiceNum} (${currentCustomer.name})`;
-        
+
         let confirmText = `New Items Total: ₹${itemsTotal.toFixed(2)}`;
         if (additionalCost > 0) {
             const reasonDisplay = additionalCostReason ? additionalCostReason : 'Misc';
             confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${reasonDisplay}: ₹${additionalCost.toFixed(2)}</span>`;
         }
-        
+
         const originalPreviousDue = order.previousDue || 0;
         if (originalPreviousDue > 0) {
             confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Original Previous Due: ₹${originalPreviousDue.toFixed(2)}</span>`;
         }
-        
+
         let rawNewGrandTotal = itemsTotal + originalPreviousDue + additionalCost;
         let newGrandTotal = rawNewGrandTotal;
         let roundOff = 0;
@@ -1168,29 +1168,29 @@ function placeOrder() {
         if (Math.abs(roundOff) > 0.001) {
             confirmText += `<br><span style="font-size:1rem; color:#64748b;">Round Off: ₹${roundOff > 0 ? '+' : ''}${roundOff.toFixed(2)}</span>`;
         }
-        
+
         confirmText += `<br><br>New Grand Total: ₹${newGrandTotal.toFixed(2)}`;
-        
+
         const diff = newGrandTotal - order.totalAmount;
         if (diff !== 0) {
             const diffColor = diff > 0 ? 'var(--danger-color)' : 'var(--success-color)';
             const diffSign = diff > 0 ? '+' : '';
             confirmText += `<br><span style="font-size:1rem; color:${diffColor}; font-weight:600;">Adjustment: ${diffSign}₹${diff.toFixed(2)}</span>`;
         }
-        
+
         document.getElementById('confirmGrandTotal').innerHTML = confirmText;
-        
+
         const paymentRecSection = document.querySelector('#confirmOrderModal div[style*="background: rgba(0, 112, 243, 0.05)"]');
         if (paymentRecSection) {
             paymentRecSection.style.display = 'none';
         }
-        
+
         const saveBtn = document.getElementById('saveAndShareBtn');
         if (saveBtn) {
             saveBtn.innerHTML = '✨ Save Changes & Share';
             saveBtn.setAttribute('onclick', 'finalizeBillEdits()');
         }
-        
+
         openModal('confirmOrderModal');
         return;
     }
@@ -1266,7 +1266,7 @@ async function finalizeOrderAndShare() {
     await new Promise(r => setTimeout(r, 400));
 
     const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    
+
     // Calculate the next invoice number
     let nextInvoiceNum = 1001;
     if (orders.length > 0) {
@@ -1390,18 +1390,18 @@ function startEditBill(orderId) {
         showToast('Bill not found.', 'error');
         return;
     }
-    
+
     editingOrderId = orderId;
     currentCustomer = customers.find(c => c.id === order.customerId);
-    
+
     if (!currentCustomer) {
         // Fallback if customer was deleted but we have snapshotted name
         currentCustomer = { id: order.customerId, name: order.customerName || 'Unknown Customer' };
     }
-    
+
     // Load items into cart
     cart = JSON.parse(JSON.stringify(order.items || []));
-    
+
     // Set additional cost
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
     if (additionalCostAmountInput) {
@@ -1411,14 +1411,14 @@ function startEditBill(orderId) {
     if (additionalCostReasonInput) {
         additionalCostReasonInput.value = order.additionalCostReason || '';
     }
-    
+
     // Show banner
     const banner = document.getElementById('editBillBanner');
     if (banner) {
         banner.style.display = 'flex';
         document.getElementById('editBillInvoiceNum').textContent = getInvoiceNumber(order);
     }
-    
+
     // Set customer selection dropdown value
     const custSelect = document.getElementById('customerSelect');
     if (custSelect) {
@@ -1431,13 +1431,13 @@ function startEditBill(orderId) {
         }
         custSelect.value = currentCustomer.id;
     }
-    
+
     // Switch to order view
     switchView('mainView');
-    
+
     // Re-render cart and update steps
     renderCart();
-    
+
     // Change Place Order button label
     const placeOrderBtn = document.getElementById('placeOrderBtn');
     if (placeOrderBtn) {
@@ -1449,45 +1449,45 @@ function cancelEditBill() {
     editingOrderId = null;
     currentCustomer = null;
     cart = [];
-    
+
     // Reset fields
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
     if (additionalCostAmountInput) additionalCostAmountInput.value = '';
     const additionalCostReasonInput = document.getElementById('additionalCostReason');
     if (additionalCostReasonInput) additionalCostReasonInput.value = '';
-    
+
     const custSelect = document.getElementById('customerSelect');
     if (custSelect) custSelect.value = '';
-    
+
     // Hide banner
     const banner = document.getElementById('editBillBanner');
     if (banner) banner.style.display = 'none';
-    
+
     // Reset headers/buttons
     const placeOrderBtn = document.getElementById('placeOrderBtn');
     if (placeOrderBtn) placeOrderBtn.innerHTML = 'Place Order →';
-    
+
     renderCart();
     switchView('billsView');
 }
 
 async function propagateOrderTotalChange(orderId, difference) {
     if (difference === 0) return;
-    
+
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
-    
+
     if (order.adjustedWithOrderId) {
         const adjustingOrder = orders.find(o => o.id === order.adjustedWithOrderId);
         if (adjustingOrder) {
             adjustingOrder.previousDue = (adjustingOrder.previousDue || 0) + difference;
             adjustingOrder.totalAmount = (adjustingOrder.totalAmount || 0) + difference;
-            
+
             if (adjustingOrder.adjustedWithOrderId) {
                 adjustingOrder.paidAmount = adjustingOrder.totalAmount;
                 await propagateOrderTotalChange(adjustingOrder.id, difference);
             }
-            
+
             await cloudUpsertOrder(adjustingOrder);
         }
     }
@@ -1495,7 +1495,7 @@ async function propagateOrderTotalChange(orderId, difference) {
 
 async function finalizeBillEdits() {
     if (!editingOrderId) return;
-    
+
     const btn = document.getElementById('saveAndShareBtn');
     const originalText = btn.innerHTML;
     btn.innerHTML = '⏳ Saving...';
@@ -1554,12 +1554,12 @@ async function finalizeBillEdits() {
     const billElement = buildBillHTML(
         currentCustomer.name,
         currentCustomer.address,
-        cart, 
-        newGrandTotal, 
-        order.previousDue || 0, 
-        order.paidAmount || 0, 
-        additionalCost, 
-        additionalCostReason, 
+        cart,
+        newGrandTotal,
+        order.previousDue || 0,
+        order.paidAmount || 0,
+        additionalCost,
+        additionalCostReason,
         invoiceNum
     );
 
@@ -1581,7 +1581,7 @@ async function finalizeBillEdits() {
     // Hide banner
     const banner = document.getElementById('editBillBanner');
     if (banner) banner.style.display = 'none';
-    
+
     // Reset place order button
     const placeOrderBtn = document.getElementById('placeOrderBtn');
     if (placeOrderBtn) placeOrderBtn.innerHTML = 'Place Order →';
@@ -1606,10 +1606,10 @@ async function finalizeBillEdits() {
     closeModal('confirmOrderModal');
     btn.innerHTML = originalText;
     btn.disabled = false;
-    
+
     // Switch view back to bills view
     switchView('billsView');
-    
+
     showToast('Bill updated successfully!', 'success');
 }
 
@@ -1618,7 +1618,7 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
     const now = new Date();
     const date = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
     const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
-    
+
     const container = document.createElement('div');
     container.style.width = '800px';
     container.style.padding = '40px';
@@ -1626,7 +1626,7 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
     container.style.fontFamily = "'Inter', sans-serif";
     container.style.color = '#1e293b';
     container.style.boxSizing = 'border-box';
-    
+
     let html = `
         <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 20px;">
             <div>
@@ -1658,7 +1658,7 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
             </thead>
             <tbody>
     `;
-    
+
     let subTotal = 0;
     items.forEach((item, index) => {
         let itemAmount = item.price * item.quantity;
@@ -1674,10 +1674,10 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
             </tr>
         `;
     });
-    
+
     const rawTotal = subTotal + previousDue + additionalCost;
     const roundOff = grandTotal - rawTotal;
-    
+
     html += `
             </tbody>
         </table>
@@ -1689,7 +1689,7 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
                     <span style="color: #334155; font-size: 14px; font-weight: 500;">₹${subTotal.toFixed(2)}</span>
                 </div>
     `;
-    
+
     if (additionalCost > 0) {
         let reason = additionalCostReason || 'Misc. Cost';
         html += `
@@ -1699,7 +1699,7 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
                 </div>
         `;
     }
-    
+
     if (previousDue > 0) {
         html += `
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
@@ -1708,7 +1708,7 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
                 </div>
         `;
     }
-    
+
     if (Math.abs(roundOff) > 0.001) {
         html += `
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
@@ -1717,14 +1717,14 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
                 </div>
         `;
     }
-    
+
     html += `
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
                     <span style="color: #334155; font-size: 15px; font-weight: 600;">Total</span>
                     <span style="color: #334155; font-size: 15px; font-weight: 600;">₹${grandTotal.toFixed(2)}</span>
                 </div>
     `;
-    
+
     if (advanceAmount > 0) {
         html += `
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
@@ -1733,9 +1733,9 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
                 </div>
         `;
     }
-    
+
     const balanceDue = grandTotal - advanceAmount;
-    
+
     html += `
                 <div style="display: flex; justify-content: space-between; padding: 12px 0; border-top: 2px solid #e2e8f0; margin-top: 8px;">
                     <span style="color: #0f172a; font-size: 18px; font-weight: 700;">Balance Due</span>
@@ -1750,7 +1750,7 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
             <p style="margin: 2px 0 0 0; font-size: 12px; color: #94a3b8;">via Taruchhaya Invoice</p>
         </div>
     `;
-    
+
     container.innerHTML = html;
     return container;
 }
@@ -1883,12 +1883,12 @@ function openPaymentModal(orderId = null) {
             custSelect.value = order.customerId;
             custSelect.disabled = true;
             if (billInput) billInput.value = order.id;
-            
+
             if (invoiceIdInput) invoiceIdInput.value = getInvoiceNumber(order);
             if (dateInput) dateInput.value = new Date(order.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
             if (invoiceGroup) invoiceGroup.style.display = 'block';
             if (dateGroup) dateGroup.style.display = 'block';
-            
+
             const pending = order.totalAmount - (order.paidAmount || 0);
             if (amountInput) amountInput.value = pending > 0 ? pending.toFixed(2) : 0;
         }
@@ -2015,7 +2015,7 @@ function renderCustomersList() {
         card.style.display = 'flex';
         card.style.flexDirection = 'column';
         card.style.gap = '10px';
-        
+
         card.innerHTML = `
             <div>
                 <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #1e293b;">${cust.name}</h3>
@@ -2046,7 +2046,6 @@ function renderCustomersList() {
 }
 
 // --- Dashboard Management ---
-let cashFlowChartInstance = null;
 
 function renderHomeDashboard() {
     // Basic stats
@@ -2059,6 +2058,10 @@ function renderHomeDashboard() {
     let overdueAmount = 0;
 
     const now = new Date();
+
+    // Calculate top customer and product stats
+    const customerStats = {};
+    const productStats = {};
 
     orders.forEach(order => {
         totalRevenue += order.totalAmount;
@@ -2073,104 +2076,217 @@ function renderHomeDashboard() {
                 currentAmount += due;
             }
         }
+
+        // Calculate customer stats (current month only)
+        if (order.customerId) {
+            const orderDate = new Date(order.date);
+            if (orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear()) {
+                const custId = order.customerId;
+                const custName = order.customerName || (customers.find(c => c.id === custId) || {}).name || 'Unknown Customer';
+                if (!customerStats[custId]) {
+                    customerStats[custId] = {
+                        name: custName,
+                        totalRevenue: 0
+                    };
+                }
+                customerStats[custId].totalRevenue += order.totalAmount;
+            }
+        }
+
+        // Calculate product stats
+        (order.items || []).forEach(item => {
+            const prodName = item.name || 'Unknown Product';
+            if (!productStats[prodName]) {
+                productStats[prodName] = {
+                    name: prodName,
+                    quantity: 0
+                };
+            }
+            productStats[prodName].quantity += item.quantity;
+        });
+    });
+
+    // Find top customer
+    let topCustomerName = 'None';
+    let topCustomerRevenue = 0;
+    Object.keys(customerStats).forEach(custId => {
+        const stats = customerStats[custId];
+        if (stats.totalRevenue > topCustomerRevenue) {
+            topCustomerRevenue = stats.totalRevenue;
+            topCustomerName = stats.name;
+        }
+    });
+
+    // Find top product
+    let topProductName = 'None';
+    let topProductQty = 0;
+    Object.keys(productStats).forEach(prodName => {
+        const stats = productStats[prodName];
+        if (stats.quantity > topProductQty) {
+            topProductQty = stats.quantity;
+            topProductName = stats.name;
+        }
     });
 
     document.getElementById('dashTotalRevenue').textContent = `₹${totalRevenue.toFixed(2)}`;
 
-    document.getElementById('dashTotalUnpaid').textContent = `₹${totalUnpaid.toFixed(2)}`;
-    document.getElementById('dashCurrentAmount').textContent = `₹${currentAmount.toFixed(2)}`;
-    document.getElementById('dashOverdueAmount').textContent = `₹${overdueAmount.toFixed(2)}`;
-
-    const curPercent = totalUnpaid > 0 ? (currentAmount / totalUnpaid) * 100 : 0;
-    const overPercent = totalUnpaid > 0 ? (overdueAmount / totalUnpaid) * 100 : 0;
-
-    document.getElementById('dashCurrentBar').style.width = `${curPercent}%`;
-    document.getElementById('dashOverdueBar').style.width = `${overPercent}%`;
-
-    // Cash Flow calculations (last 7 days)
-    let dates = [];
-    let cashData = [];
-    let openingBal = 0; // Mock opening balance based on total history minus 7 days
-    let incoming = 0;
-
-    for (let i = 6; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        dates.push(d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }));
+    const topCustomerEl = document.getElementById('dashTopCustomer');
+    const topCustomerSubEl = document.getElementById('dashTopCustomerSub');
+    if (topCustomerEl && topCustomerSubEl) {
+        topCustomerEl.textContent = topCustomerName;
+        topCustomerEl.title = topCustomerName;
+        topCustomerSubEl.textContent = topCustomerRevenue > 0 ? `₹${topCustomerRevenue.toFixed(2)} billing` : 'No billing';
     }
 
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
+    const topProductEl = document.getElementById('dashTopProduct');
+    const topProductSubEl = document.getElementById('dashTopProductSub');
+    if (topProductEl && topProductSubEl) {
+        topProductEl.textContent = topProductName;
+        topProductEl.title = topProductName;
+        topProductSubEl.textContent = topProductQty > 0 ? `${topProductQty} units sold` : 'No sales';
+    }
+    const totalUnpaidEl = document.getElementById('dashTotalUnpaid');
+    const unpaidBreakdownEl = document.getElementById('dashUnpaidBreakdown');
+    if (totalUnpaidEl) {
+        totalUnpaidEl.textContent = `₹${totalUnpaid.toFixed(2)}`;
+    }
+    if (unpaidBreakdownEl) {
+        unpaidBreakdownEl.textContent = `Cur: ₹${currentAmount.toFixed(2)} | Over: ₹${overdueAmount.toFixed(2)}`;
+    }
 
-    let cumulativeCash = 0;
 
-    paymentHistory.forEach(pay => {
-        const payDate = new Date(pay.date);
-        if (payDate < weekAgo) {
-            openingBal += pay.amount;
-        } else {
-            incoming += pay.amount;
+}
+
+function showUnpaidModal() {
+    const container = document.getElementById('unpaidListContainer');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    let unpaidOrders = [];
+    orders.forEach(order => {
+        const due = order.totalAmount - (order.paidAmount || 0);
+        if (due > 0) {
+            unpaidOrders.push({
+                ...order,
+                dueAmount: due
+            });
         }
     });
-
-    cumulativeCash = openingBal;
-
-    const paymentsByDate = {};
-    paymentHistory.forEach(pay => {
-        const payDate = new Date(pay.date);
-        if (payDate >= weekAgo) {
-            const dStr = payDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-            paymentsByDate[dStr] = (paymentsByDate[dStr] || 0) + pay.amount;
-        }
-    });
-
-    dates.forEach(d => {
-        cumulativeCash += (paymentsByDate[d] || 0);
-        cashData.push(cumulativeCash);
-    });
-
-    const closingBal = cumulativeCash;
-
-    document.getElementById('dashOpeningBal').textContent = `₹${openingBal.toFixed(2)}`;
-    document.getElementById('dashIncoming').innerHTML = `₹${incoming.toFixed(2)} <small>+</small>`;
-    document.getElementById('dashClosingBal').innerHTML = `₹${closingBal.toFixed(2)} <small>=</small>`;
-
-    // Chart.js
-    const ctx = document.getElementById('cashFlowChart');
-    if (!ctx) return;
-
-    if (typeof window.Chart !== 'undefined') {
-        if (cashFlowChartInstance) {
-            cashFlowChartInstance.destroy();
-        }
-
-        cashFlowChartInstance = new window.Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: dates,
-                datasets: [{
-                    label: 'Cash Flow',
-                    data: cashData,
-                    borderColor: '#64748b', // Muted slate gray instead of bright green
-                    backgroundColor: 'rgba(100, 116, 139, 0.1)', // Very soft slate tint
-                    borderWidth: 2,
-                    fill: true,
-                    tension: 0.4
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
-                },
-                scales: {
-                    y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' } },
-                    x: { grid: { display: false } }
-                }
-            }
+    
+    // Sort by date (newest first)
+    unpaidOrders.sort((a, b) => new Date(b.date) - new Date(a.date));
+    
+    if (unpaidOrders.length === 0) {
+        container.innerHTML = '<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No unpaid invoices found.</p>';
+    } else {
+        unpaidOrders.forEach(order => {
+            const customerName = order.customerName || (customers.find(c => c.id === order.customerId) || {}).name || 'Unknown Customer';
+            const invoiceNum = getInvoiceNumber(order);
+            const dateStr = new Date(order.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+            
+            const card = document.createElement('div');
+            card.className = 'bill-card';
+            card.style.marginBottom = '10px';
+            card.style.display = 'flex';
+            card.style.justifyContent = 'space-between';
+            card.style.alignItems = 'center';
+            card.style.padding = '12px';
+            card.style.backgroundColor = 'var(--bg-color)';
+            card.style.border = '1px solid var(--panel-border)';
+            card.style.borderRadius = '8px';
+            
+            card.innerHTML = `
+                <div>
+                    <h3 style="margin: 0; font-size: 1.05rem; color: var(--text-color);">${customerName}</h3>
+                    <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; font-weight: 500;">
+                        <span>#${invoiceNum}</span> &bull; <span>${dateStr}</span>
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="color: var(--danger-color); font-weight: bold; font-size: 1.1rem;">₹${order.dueAmount.toFixed(2)}</div>
+                    <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.8rem; margin-top: 6px; border-color: var(--accent-color); color: var(--accent-color); background: transparent;" onclick="closeModal('unpaidModal'); openPaymentModal('${order.id}')">Pay Now</button>
+                </div>
+            `;
+            container.appendChild(card);
         });
     }
+    
+    openModal('unpaidModal');
+}
+
+function showTopCustomersModal() {
+    const container = document.getElementById('topCustomersListContainer');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    const now = new Date();
+    const customerStats = {};
+    
+    orders.forEach(order => {
+        if (order.customerId) {
+            const orderDate = new Date(order.date);
+            if (orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear()) {
+                const custId = order.customerId;
+                const custName = order.customerName || (customers.find(c => c.id === custId) || {}).name || 'Unknown Customer';
+                if (!customerStats[custId]) {
+                    customerStats[custId] = {
+                        id: custId,
+                        name: custName,
+                        totalRevenue: 0,
+                        orderCount: 0
+                    };
+                }
+                customerStats[custId].totalRevenue += order.totalAmount;
+                customerStats[custId].orderCount += 1;
+            }
+        }
+    });
+    
+    // Convert to array and sort by revenue
+    const sortedCustomers = Object.values(customerStats).sort((a, b) => b.totalRevenue - a.totalRevenue).slice(0, 5);
+    
+    if (sortedCustomers.length === 0) {
+        container.innerHTML = '<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No customer activity this month.</p>';
+    } else {
+        sortedCustomers.forEach((cust, index) => {
+            const card = document.createElement('div');
+            card.className = 'bill-card';
+            card.style.marginBottom = '10px';
+            card.style.display = 'flex';
+            card.style.justifyContent = 'space-between';
+            card.style.alignItems = 'center';
+            card.style.padding = '12px';
+            card.style.backgroundColor = 'var(--bg-color)';
+            card.style.border = '1px solid var(--panel-border)';
+            card.style.borderRadius = '8px';
+            
+            let medal = '';
+            if (index === 0) medal = '🥇 ';
+            else if (index === 1) medal = '🥈 ';
+            else if (index === 2) medal = '🥉 ';
+            else medal = `<span style="display:inline-block; width: 24px; text-align: center; color: var(--text-secondary); font-weight: bold;">#${index+1}</span> `;
+            
+            card.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="font-size: 1.5rem;">${medal}</div>
+                    <div>
+                        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text-color);">${cust.name}</h3>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; font-weight: 500;">
+                            ${cust.orderCount} order${cust.orderCount > 1 ? 's' : ''} this month
+                        </div>
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="color: #10b981; font-weight: bold; font-size: 1.1rem;">₹${cust.totalRevenue.toFixed(2)}</div>
+                </div>
+            `;
+            container.appendChild(card);
+        });
+    }
+    
+    openModal('topCustomersModal');
 }
 
 // --- View Switching ---
@@ -2286,22 +2402,22 @@ function showBillPreviewModal(orderId) {
 
     const previewContent = document.getElementById('billPreviewContent');
     if (!previewContent) return;
-    
+
     previewContent.innerHTML = '';
-    
+
     // Convert styles from buildBillHTML element to be responsive inside modal
     billElement.style.position = 'relative';
     billElement.style.left = '0';
     billElement.style.top = '0';
     billElement.style.width = '100%';
-    
+
     previewContent.appendChild(billElement);
-    
+
     const printBtn = document.getElementById('previewPrintBtn');
     if (printBtn) {
         printBtn.onclick = () => printInvoice(orderId);
     }
-    
+
     openModal('billPreviewModal');
 }
 

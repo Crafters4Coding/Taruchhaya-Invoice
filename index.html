@@ -8,7 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=17">
+    <link rel="stylesheet" href="style.css?v=18">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -107,7 +107,7 @@
 
         <div class="app-container" style="position: relative;">
             <!-- Dashboard Home View -->
-            <main class="view-page" id="homeView" style="display:none; padding-bottom: 20px; position: relative;">
+            <main class="view-page" id="homeView" style="display:none; padding-bottom: 90px; position: relative;">
 
                 <div class="dashboard-header-container"
                     style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
@@ -130,75 +130,39 @@
                 <!-- Quick Stats Row -->
                 <div class="quick-stats-grid">
                     <div class="stat-card glass-panel">
-                        <div class="stat-icon" style="background: #f1f5f9; color: #475569;">💰</div>
-                        <div class="stat-content">
+                        <div class="stat-icon" style="background: rgba(37, 99, 235, 0.1); color: #2563eb;">💰</div>
+                        <div class="stat-content" style="min-width: 0; flex: 1;">
                             <span class="stat-label">Total Revenue</span>
                             <h3 class="stat-value" id="dashTotalRevenue">₹0.00</h3>
                         </div>
                     </div>
-                </div>
-
-                <!-- Main Dashboard Grid -->
-                <div class="dashboard-main-grid">
-                    <!-- Receivables Card -->
-                    <div class="glass-panel section-card dashboard-card">
-                        <h2 style="font-size: 1rem; color: var(--text-secondary); margin-bottom: 1rem;">TOTAL
-                            RECEIVABLES</h2>
-                        <div style="margin-bottom: 1.5rem;">
-                            <span style="font-size: 0.9rem; color: var(--text-secondary);">Total Unpaid Invoices</span>
-                            <h3 style="font-size: 1.5rem; font-weight: 700; color: var(--text-primary);"
-                                id="dashTotalUnpaid">₹0.00</h3>
-                        </div>
-
-                        <div class="progress-bar-container">
-                            <div class="progress-bar-segment current-segment" id="dashCurrentBar" style="width: 50%;">
-                            </div>
-                            <div class="progress-bar-segment overdue-segment" id="dashOverdueBar" style="width: 50%;">
-                            </div>
-                        </div>
-
-                        <div class="receivables-breakdown">
-                            <div>
-                                <span style="color: #64748b; font-weight: 500; font-size: 0.9rem;">Current</span>
-                                <h4 style="font-size: 1.1rem; margin-top: 4px; color: #334155;" id="dashCurrentAmount">
-                                    ₹0.00</h4>
-                            </div>
-                            <div>
-                                <span style="color: #94a3b8; font-weight: 500; font-size: 0.9rem;">Overdue</span>
-                                <h4 style="font-size: 1.1rem; margin-top: 4px; color: #334155;" id="dashOverdueAmount">
-                                    ₹0.00</h4>
-                            </div>
+                    <div class="stat-card glass-panel" style="cursor: pointer;" onclick="showUnpaidModal()" title="Click to view unpaid invoices">
+                        <div class="stat-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">💸</div>
+                        <div class="stat-content" style="min-width: 0; flex: 1;">
+                            <span class="stat-label">Total Unpaid</span>
+                            <h3 class="stat-value" id="dashTotalUnpaid">₹0.00</h3>
+                            <span id="dashUnpaidBreakdown" style="font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;">Cur: ₹0.00 | Over: ₹0.00</span>
                         </div>
                     </div>
-
-                    <!-- Cash Flow Chart Card -->
-                    <div class="glass-panel section-card dashboard-card cash-flow-card">
-                        <h2 style="font-size: 1rem; color: var(--text-secondary); margin-bottom: 1rem;">CASH FLOW (LAST
-                            7 DAYS)</h2>
-                        <div class="cash-flow-container">
-                            <div class="chart-wrapper">
-                                <canvas id="cashFlowChart"></canvas>
-                            </div>
-                            <div class="cash-flow-summary">
-                                <div class="summary-item">
-                                    <span class="summary-label">Opening Balance</span>
-                                    <span class="summary-val text-sober" id="dashOpeningBal">₹0.00</span>
-                                </div>
-                                <div class="summary-item">
-                                    <span class="summary-label">Incoming (Sales)</span>
-                                    <span class="summary-val text-sober" id="dashIncoming">₹0.00 <small
-                                            style="color: #94a3b8;">+</small></span>
-                                </div>
-                                <div class="summary-item">
-                                    <span class="summary-label">Closing Balance</span>
-                                    <span class="summary-val text-sober"
-                                        style="font-weight: 600; border-top: 1px solid var(--panel-border); padding-top: 8px; margin-top: 8px;"
-                                        id="dashClosingBal">₹0.00 <small style="color: #94a3b8;">=</small></span>
-                                </div>
-                            </div>
+                    <div class="stat-card glass-panel" style="cursor: pointer;" onclick="showTopCustomersModal()" title="Click to view top 5 customers">
+                        <div class="stat-icon" style="background: rgba(16, 185, 129, 0.1); color: #10b981;">👑</div>
+                        <div class="stat-content" style="min-width: 0; flex: 1;">
+                            <span class="stat-label">Top Customer</span>
+                            <h3 class="stat-value" id="dashTopCustomer" style="font-size: 1.1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; width: 100%;" title="No customer yet">None</h3>
+                            <span id="dashTopCustomerSub" style="font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;">₹0.00 billing</span>
+                        </div>
+                    </div>
+                    <div class="stat-card glass-panel">
+                        <div class="stat-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">🔥</div>
+                        <div class="stat-content" style="min-width: 0; flex: 1;">
+                            <span class="stat-label">Top Product</span>
+                            <h3 class="stat-value" id="dashTopProduct" style="font-size: 1.1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; width: 100%;" title="No product yet">None</h3>
+                            <span id="dashTopProductSub" style="font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;">0 units sold</span>
                         </div>
                     </div>
                 </div>
+
+
             </main>
 
             <!-- Main Content Grid (New Order) -->
@@ -315,7 +279,7 @@
             </main>
 
             <!-- Bills View -->
-            <main class="view-page" id="billsView" style="display:none; height: 100%; padding-bottom: 20px;">
+            <main class="view-page" id="billsView" style="display:none; height: 100%; padding-bottom: 90px;">
                 <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
                         <h2>Saved Bills</h2>
@@ -327,7 +291,7 @@
             </main>
 
             <!-- History View -->
-            <main class="view-page" id="historyView" style="display:none; height: 100%; padding-bottom: 20px;">
+            <main class="view-page" id="historyView" style="display:none; height: 100%; padding-bottom: 90px;">
                 <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
                         <h2>Payment History</h2>
@@ -339,7 +303,7 @@
             </main>
 
             <!-- Customers View -->
-            <main class="view-page" id="customersView" style="display:none; height: 100%; padding-bottom: 20px;">
+            <main class="view-page" id="customersView" style="display:none; height: 100%; padding-bottom: 90px;">
                 <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
                         <h2>Customers</h2>
@@ -352,7 +316,7 @@
             </main>
 
             <!-- Products View -->
-            <main class="view-page" id="productsView" style="display:none; height: 100%; padding-bottom: 20px;">
+            <main class="view-page" id="productsView" style="display:none; height: 100%; padding-bottom: 90px;">
                 <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; gap: 15px; flex-wrap: wrap;">
                         <h2>Products</h2>
@@ -421,6 +385,28 @@
                 </div>
                 <button type="submit" class="btn btn-primary full-width">Save Product</button>
             </form>
+        </div>
+    </div>
+
+    <!-- Unpaid Invoices Modal -->
+    <div id="unpaidModal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 600px;">
+            <span class="close" onclick="closeModal('unpaidModal')">&times;</span>
+            <h2 style="margin-bottom: 15px;">Unpaid Invoices</h2>
+            <div id="unpaidListContainer" style="max-height: 400px; overflow-y: auto;">
+                <!-- Unpaid list injected here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Top Customers Modal -->
+    <div id="topCustomersModal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 600px;">
+            <span class="close" onclick="closeModal('topCustomersModal')">&times;</span>
+            <h2 style="margin-bottom: 15px;">Top 5 Customers (This Month)</h2>
+            <div id="topCustomersListContainer" style="max-height: 400px; overflow-y: auto;">
+                <!-- Top customers list injected here -->
+            </div>
         </div>
     </div>
 
