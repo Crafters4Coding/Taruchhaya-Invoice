@@ -2289,6 +2289,73 @@ function showTopCustomersModal() {
     openModal('topCustomersModal');
 }
 
+function showTopProductsModal() {
+    const container = document.getElementById('topProductsListContainer');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    const now = new Date();
+    const productStats = {};
+    
+    orders.forEach(order => {
+        const orderDate = new Date(order.date);
+        if (orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear()) {
+            (order.items || []).forEach(item => {
+                const prodName = item.name || 'Unknown Product';
+                if (!productStats[prodName]) {
+                    productStats[prodName] = {
+                        name: prodName,
+                        quantity: 0
+                    };
+                }
+                productStats[prodName].quantity += item.quantity;
+            });
+        }
+    });
+    
+    // Convert to array and sort by quantity
+    const sortedProducts = Object.values(productStats).sort((a, b) => b.quantity - a.quantity).slice(0, 10);
+    
+    if (sortedProducts.length === 0) {
+        container.innerHTML = '<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No product sales this month.</p>';
+    } else {
+        sortedProducts.forEach((prod, index) => {
+            const card = document.createElement('div');
+            card.className = 'bill-card';
+            card.style.marginBottom = '10px';
+            card.style.display = 'flex';
+            card.style.justifyContent = 'space-between';
+            card.style.alignItems = 'center';
+            card.style.padding = '12px';
+            card.style.backgroundColor = 'var(--bg-color)';
+            card.style.border = '1px solid var(--panel-border)';
+            card.style.borderRadius = '8px';
+            
+            let medal = '';
+            if (index === 0) medal = '🥇 ';
+            else if (index === 1) medal = '🥈 ';
+            else if (index === 2) medal = '🥉 ';
+            else medal = `<span style="display:inline-block; width: 24px; text-align: center; color: var(--text-secondary); font-weight: bold;">#${index+1}</span> `;
+            
+            card.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="font-size: 1.5rem;">${medal}</div>
+                    <div>
+                        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text-color);">${prod.name}</h3>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; font-weight: 500;">
+                            ${prod.quantity} units sold
+                        </div>
+                    </div>
+                </div>
+            `;
+            container.appendChild(card);
+        });
+    }
+    
+    openModal('topProductsModal');
+}
+
 // --- View Switching ---
 function switchView(viewId) {
     document.getElementById('homeView').style.display = 'none';

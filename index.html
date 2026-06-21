@@ -152,7 +152,7 @@
                             <span id="dashTopCustomerSub" style="font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;">₹0.00 billing</span>
                         </div>
                     </div>
-                    <div class="stat-card glass-panel">
+                    <div class="stat-card glass-panel" style="cursor: pointer;" onclick="showTopProductsModal()" title="Click to view top 10 products">
                         <div class="stat-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">🔥</div>
                         <div class="stat-content" style="min-width: 0; flex: 1;">
                             <span class="stat-label">Top Product</span>
@@ -406,6 +406,17 @@
             <h2 style="margin-bottom: 15px;">Top 5 Customers (This Month)</h2>
             <div id="topCustomersListContainer" style="max-height: 400px; overflow-y: auto;">
                 <!-- Top customers list injected here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Top Products Modal -->
+    <div id="topProductsModal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 600px;">
+            <span class="close" onclick="closeModal('topProductsModal')">&times;</span>
+            <h2 style="margin-bottom: 15px;">Top 10 Products (This Month)</h2>
+            <div id="topProductsListContainer" style="max-height: 400px; overflow-y: auto;">
+                <!-- Top products list injected here -->
             </div>
         </div>
     </div>
