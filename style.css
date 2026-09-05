@@ -551,7 +551,7 @@ body {
 
 .stepper-line {
     height: 2px;
-    width: 60px;
+    width: 50px;
     background: var(--panel-border);
     margin-bottom: 20px;
     transition: background 0.3s;
@@ -561,12 +561,30 @@ body {
     background: var(--accent-color);
 }
 
+@media (max-width: 600px) {
+    .stepper-line {
+        width: 24px;
+        margin-bottom: 16px;
+    }
+    
+    .order-step-card {
+        padding: 1rem 0.85rem !important;
+        border-radius: 16px !important;
+    }
+
+    .order-view {
+        gap: 0.75rem !important;
+        padding-bottom: 140px !important;
+    }
+}
+
 /* Order Step Cards */
 .order-step-card {
     border-radius: 20px;
     padding: 1.25rem 1.5rem;
     transition: all 0.35s ease;
-    overflow: hidden;
+    position: relative;
+    z-index: 1;
 }
 
 .order-step-card.dimmed {
@@ -743,11 +761,13 @@ body {
     font-weight: 600;
     color: var(--text-primary);
     outline: none;
+    appearance: textfield;
     -moz-appearance: textfield;
 }
 
 .qty-input::-webkit-outer-spin-button,
 .qty-input::-webkit-inner-spin-button {
+    appearance: none;
     -webkit-appearance: none;
 }
 
@@ -794,11 +814,39 @@ body {
 
 .cart-item-card {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.85rem 1rem;
+    padding: 1rem;
     border-bottom: 1px solid var(--panel-border);
     animation: slideInCart 0.2s ease;
+    background: #ffffff;
+}
+
+@media (max-width: 600px) {
+    .cart-item-card {
+        padding: 0.85rem;
+        gap: 0.5rem;
+    }
+
+    .cart-item-info {
+        width: 100%;
+        flex: 1 1 100%;
+        margin-bottom: 4px;
+    }
+
+    .cart-item-name {
+        font-size: 1rem !important;
+        white-space: normal !important;
+        word-break: break-word;
+    }
+
+    .cart-item-price-input {
+        width: 85px !important;
+        height: 36px !important;
+        font-size: 0.95rem !important;
+        padding: 4px 8px !important;
+    }
 }
 
 .cart-item-card:last-child {
@@ -913,19 +961,53 @@ body {
     display: flex;
     gap: 0.75rem;
     align-items: center;
-    padding: 0.75rem 1rem;
-    background: rgba(0, 0, 0, 0.02);
-    border: 1px dashed var(--panel-border);
-    border-radius: 12px;
+    padding: 0.85rem 1rem;
+    background: rgba(37, 99, 235, 0.03);
+    border: 1.5px dashed rgba(37, 99, 235, 0.25);
+    border-radius: 14px;
+}
+
+@media (max-width: 600px) {
+    .additional-cost-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+    }
+
+    .add-cost-amount-wrap {
+        width: 100% !important;
+    }
+
+    .empty-cart-msg {
+        padding: 1.25rem 1rem !important;
+        font-size: 0.95rem !important;
+    }
+
+    .cart-qty-btn {
+        width: 38px !important;
+        height: 38px !important;
+        font-size: 1.3rem !important;
+    }
+
+    .cart-qty-display {
+        min-width: 38px !important;
+        height: 38px !important;
+        font-size: 1rem !important;
+    }
+
+    .premium-search-input {
+        padding: 0.9rem 0.9rem 0.9rem 2.8rem !important;
+        font-size: 1.05rem !important;
+    }
 }
 
 .premium-input {
     flex: 1;
-    padding: 0.65rem 0.85rem;
+    padding: 0.75rem 0.95rem;
     border: 1.5px solid var(--panel-border);
     border-radius: 10px;
     background: var(--input-bg);
-    font-size: 0.9rem;
+    font-size: 0.95rem;
     color: var(--text-primary);
     outline: none;
     min-width: 0;
@@ -939,22 +1021,22 @@ body {
 .add-cost-amount-wrap {
     position: relative;
     flex-shrink: 0;
-    width: 110px;
+    width: 120px;
 }
 
 .currency-prefix {
     position: absolute;
-    left: 10px;
+    left: 12px;
     top: 50%;
     transform: translateY(-50%);
     color: var(--text-secondary);
     font-weight: 600;
-    font-size: 0.9rem;
+    font-size: 1rem;
     pointer-events: none;
 }
 
 .add-cost-amount-wrap .premium-input {
-    padding-left: 1.5rem;
+    padding-left: 1.8rem;
     width: 100%;
 }
 
