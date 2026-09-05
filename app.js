@@ -238,9 +238,23 @@ async function loadCloudData() {
         localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
         localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
 
-        // Re-render UI
-        renderCustomerSelect();
-        renderProductSelect();
+        // Re-render UI while maintaining active selection if applicable
+        const activeCustVal = document.getElementById('customerSelect') ? document.getElementById('customerSelect').value : '';
+        const activeProdVal = document.getElementById('productSelect') ? document.getElementById('productSelect').value : '';
+        renderCustomerSelect(document.getElementById('customerSearch') ? document.getElementById('customerSearch').value : '');
+        renderProductSelect(document.getElementById('productSearch') ? document.getElementById('productSearch').value : '');
+        if (activeCustVal) {
+            const custSelect = document.getElementById('customerSelect');
+            if (custSelect && Array.from(custSelect.options).some(o => o.value === activeCustVal)) {
+                custSelect.value = activeCustVal;
+            }
+        }
+        if (activeProdVal) {
+            const prodSelect = document.getElementById('productSelect');
+            if (prodSelect && Array.from(prodSelect.options).some(o => o.value === activeProdVal)) {
+                prodSelect.value = activeProdVal;
+            }
+        }
         if (typeof renderProductsList === 'function') renderProductsList();
         renderBills();
         renderCart();
@@ -583,6 +597,7 @@ function deleteCustomer(id) {
 
 function renderCustomerSelect(filterTerm = '') {
     const select = document.getElementById('customerSelect');
+    if (!select) return;
     const currentVal = select.value; // Preserve current selection if possible
     select.innerHTML = '<option value="">-- Select a Customer --</option>';
 
@@ -770,6 +785,7 @@ function handleProductChange() {
 
 function renderProductSelect(filterTerm = '') {
     const select = document.getElementById('productSelect');
+    if (!select) return;
     const currentVal = select.value;
     select.innerHTML = '<option value="">-- Select a Product --</option>';
 
@@ -916,7 +932,9 @@ function addProductToCart() {
 
     if (existingItem) {
         existingItem.quantity += quantity;
-        existingItem.price = price;
+        if (priceOverrideInput && priceOverrideInput.value !== '') {
+            existingItem.price = price;
+        }
     } else {
         cart.push({
             productId: product.id,
@@ -966,10 +984,202 @@ function updateCartPrice(productId, newPrice) {
     }
 }
 
+// --- Quick Select Product Chips ---
+function renderQuickProductChips() {
+    const container = document.getElementById('quickProductChips');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const sortedProducts = [...products].sort((a, b) => a.name.localeCompare(b.name));
+    if (sortedProducts.length === 0) {
+        container.innerHTML = '<span style="font-size: 0.8rem; color: var(--text-secondary); font-style: italic;">No products available</span>';
+        return;
+    }
+
+    sortedProducts.forEach(prod => {
+        const inCartItem = cart.find(i => i.productId === prod.id);
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.style.cssText = `
+            padding: 8px 14px;
+            border-radius: 24px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1.5px solid ${inCartItem ? 'var(--accent-color)' : 'var(--panel-border)'};
+            background: ${inCartItem ? 'rgba(37, 99, 235, 0.12)' : '#ffffff'};
+            color: ${inCartItem ? 'var(--accent-color)' : 'var(--text-primary)'};
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-height: 38px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.03);
+            flex-shrink: 0;
+        `;
+        const unitStr = prod.unit ? `/${prod.unit}` : '';
+        chip.innerHTML = `${prod.name} <span style="opacity: 0.85; font-weight: 700;">₹${prod.price.toFixed(2)}${unitStr}</span> ${inCartItem ? `<strong style="background: var(--accent-color); color: white; border-radius: 12px; padding: 2px 7px; font-size: 0.78rem;">${inCartItem.quantity}</strong>` : '<span style="font-weight: 800; font-size: 1rem; color: var(--accent-color);">＋</span>'}`;
+        chip.onclick = () => {
+            quickAddProductToCart(prod.id);
+        };
+        container.appendChild(chip);
+    });
+}
+
+function quickAddProductToCart(productId) {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+
+    const existingItem = cart.find(item => item.productId === productId);
+    if (existingItem) {
+        existingItem.quantity += 1;
+    } else {
+        cart.push({
+            productId: product.id,
+            name: product.name,
+            price: product.price,
+            quantity: 1,
+            unit: product.unit || 'pcs'
+        });
+    }
+
+    renderCart();
+    renderQuickProductChips();
+}
+
+// --- Customer Combobox Search ---
+function onCustomerSearchInput(value) {
+    const dropdown = document.getElementById('customerDropdownList');
+    if (!dropdown) return;
+
+    const query = value.trim().toLowerCase();
+    const filtered = customers.filter(c => c.name.toLowerCase().includes(query) || (c.phone && c.phone.includes(query)));
+
+    dropdown.innerHTML = '';
+    if (filtered.length === 0) {
+        dropdown.innerHTML = `<div style="padding: 12px; text-align: center; color: var(--text-secondary); font-size: 0.88rem;">No customer found</div>`;
+    } else {
+        filtered.forEach(cust => {
+            let totalDue = 0;
+            orders.filter(o => o.customerId === cust.id).forEach(o => {
+                totalDue += (o.totalAmount - (o.paidAmount || 0));
+            });
+
+            const item = document.createElement('div');
+            item.style.cssText = `
+                padding: 14px 16px;
+                border-bottom: 1px solid var(--panel-border);
+                cursor: pointer;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                transition: background 0.15s;
+            `;
+            item.onmouseover = () => item.style.background = 'rgba(37, 99, 235, 0.08)';
+            item.onmouseout = () => item.style.background = 'transparent';
+            item.onclick = () => selectCustomerFromCombobox(cust.id);
+
+            item.innerHTML = `
+                <div>
+                    <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary);">${cust.name}</div>
+                    <div style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 4px;">📞 ${cust.phone || 'N/A'} ${cust.address ? '· 📍 ' + cust.address : ''}</div>
+                </div>
+                ${totalDue > 0 ? `<span style="font-size: 0.85rem; font-weight: 700; color: var(--danger-color); background: rgba(239, 68, 68, 0.1); padding: 4px 10px; border-radius: 12px;">Due: ₹${totalDue.toFixed(2)}</span>` : '<span style="font-size: 0.85rem; font-weight: 600; color: var(--success-color); background: rgba(16, 185, 129, 0.1); padding: 4px 10px; border-radius: 12px;">No Dues</span>'}
+            `;
+            dropdown.appendChild(item);
+        });
+    }
+
+    dropdown.style.display = 'block';
+}
+
+function selectCustomerFromCombobox(customerId) {
+    const dropdown = document.getElementById('customerDropdownList');
+    if (dropdown) dropdown.style.display = 'none';
+
+    const searchInput = document.getElementById('customerSearch');
+    const selected = customers.find(c => c.id === customerId);
+
+    if (selected) {
+        if (searchInput) searchInput.value = selected.name;
+        currentCustomer = selected;
+    }
+
+    renderCart();
+    updateOrderStepUI();
+}
+
+// Close comboboxes when clicking outside
+document.addEventListener('click', (e) => {
+    const custWrap = document.getElementById('customerSearch');
+    const custDropdown = document.getElementById('customerDropdownList');
+    if (custDropdown && custWrap && !custWrap.contains(e.target) && !custDropdown.contains(e.target)) {
+        custDropdown.style.display = 'none';
+    }
+
+    const prodWrap = document.getElementById('productSearch');
+    const prodDropdown = document.getElementById('productDropdownList');
+    if (prodDropdown && prodWrap && !prodWrap.contains(e.target) && !prodDropdown.contains(e.target)) {
+        prodDropdown.style.display = 'none';
+    }
+});
+
+// --- Product Combobox Search ---
+function onProductSearchInput(value) {
+    const dropdown = document.getElementById('productDropdownList');
+    if (!dropdown) return;
+
+    const query = value.trim().toLowerCase();
+    const filtered = products.filter(p => p.name.toLowerCase().includes(query));
+
+    dropdown.innerHTML = '';
+    if (filtered.length === 0) {
+        dropdown.innerHTML = `<div style="padding: 12px; text-align: center; color: var(--text-secondary); font-size: 0.88rem;">No products found matching query</div>`;
+    } else {
+        filtered.forEach(prod => {
+            const inCartItem = cart.find(i => i.productId === prod.id);
+
+            const item = document.createElement('div');
+            item.style.cssText = `
+                padding: 14px 16px;
+                border-bottom: 1px solid var(--panel-border);
+                cursor: pointer;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                transition: background 0.15s;
+            `;
+            item.onmouseover = () => item.style.background = 'rgba(37, 99, 235, 0.08)';
+            item.onmouseout = () => item.style.background = 'transparent';
+            item.onclick = () => {
+                quickAddProductToCart(prod.id);
+                if (dropdown) dropdown.style.display = 'none';
+                const searchInput = document.getElementById('productSearch');
+                if (searchInput) searchInput.value = '';
+            };
+
+            const unitDisplay = prod.unit ? ` / ${prod.unit}` : '';
+            item.innerHTML = `
+                <div>
+                    <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary);">${prod.name}</div>
+                    <div style="font-size: 0.9rem; color: var(--accent-color); font-weight: 700; margin-top: 4px;">₹${prod.price.toFixed(2)}${unitDisplay}</div>
+                </div>
+                <button type="button" style="background: var(--accent-color); color: white; border: none; padding: 8px 16px; border-radius: 10px; font-weight: 700; font-size: 0.9rem; cursor: pointer; min-height: 40px; display: flex; align-items: center;">
+                    ${inCartItem ? `Add More (${inCartItem.quantity})` : '＋ Add'}
+                </button>
+            `;
+            dropdown.appendChild(item);
+        });
+    }
+
+    dropdown.style.display = 'block';
+}
+
 function expandStep(stepNum) {
     if (stepNum === 1) {
         document.getElementById('step1Body').style.display = 'flex';
         document.getElementById('editStep1Btn').style.display = 'none';
+        document.getElementById('customerSelectedDetails').style.display = 'none';
     }
 }
 
@@ -983,12 +1193,12 @@ function updateOrderStepUI() {
     const stickyBar = document.getElementById('stickyCartBar');
     const cartCountLabel = document.getElementById('cartCountLabel');
     const selectedCustomerLabel = document.getElementById('selectedCustomerLabel');
+    const customerDetailsCard = document.getElementById('customerSelectedDetails');
+
+    renderQuickProductChips();
 
     if (currentCustomer) {
-        // Customer selected: lock step 1, activate step 2
-        step2.classList.remove('dimmed');
-        step2.style.pointerEvents = 'auto';
-
+        // Customer selected: lock step 1 input, display rich detail card
         ind1.classList.remove('active');
         ind1.classList.add('done');
         ind2.classList.add('active');
@@ -996,15 +1206,31 @@ function updateOrderStepUI() {
         if (lines[0]) lines[0].classList.add('active');
 
         if (selectedCustomerLabel) {
-            selectedCustomerLabel.textContent = currentCustomer.name + (currentCustomer.phone ? ' · ' + currentCustomer.phone : '');
+            selectedCustomerLabel.textContent = currentCustomer.name;
         }
+
+        // Fill detail card
+        let totalDue = 0;
+        orders.filter(o => o.customerId === currentCustomer.id && o.id !== editingOrderId).forEach(o => {
+            totalDue += (o.totalAmount - (o.paidAmount || 0));
+        });
+
+        const phoneElem = document.getElementById('custDetailPhone');
+        const addrElem = document.getElementById('custDetailAddress');
+        if (phoneElem) phoneElem.textContent = '📞 ' + (currentCustomer.phone || 'No Phone');
+        if (addrElem) addrElem.textContent = '📍 ' + (currentCustomer.address || 'No Address');
+        const dueBadge = document.getElementById('custDetailDueBadge');
+        if (dueBadge) {
+            dueBadge.textContent = totalDue > 0 ? `Prev Due: ₹${totalDue.toFixed(2)}` : 'No Dues';
+            dueBadge.style.color = totalDue > 0 ? 'var(--danger-color)' : 'var(--success-color)';
+            dueBadge.style.background = totalDue > 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(16, 185, 129, 0.1)';
+        }
+
+        if (customerDetailsCard) customerDetailsCard.style.display = 'block';
         document.getElementById('editStep1Btn').style.display = 'inline-flex';
         document.getElementById('step1Body').style.display = 'none';
     } else {
-        // No customer
-        step2.classList.add('dimmed');
-        step2.style.pointerEvents = 'none';
-
+        // No customer selected
         ind1.classList.add('active');
         ind1.classList.remove('done');
         ind2.classList.remove('active', 'done');
@@ -1013,6 +1239,7 @@ function updateOrderStepUI() {
         if (lines[1]) lines[1].classList.remove('active');
 
         if (selectedCustomerLabel) selectedCustomerLabel.textContent = 'No customer selected';
+        if (customerDetailsCard) customerDetailsCard.style.display = 'none';
         document.getElementById('editStep1Btn').style.display = 'none';
         document.getElementById('step1Body').style.display = 'flex';
     }
@@ -1062,21 +1289,30 @@ function renderCart() {
 
         const card = document.createElement('div');
         card.className = 'cart-item-card';
+        card.style.cssText = 'display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--panel-border); border-radius: 14px; background: #ffffff; margin-top: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.03);';
         card.innerHTML = `
-            <div class="cart-item-info">
-                <div class="cart-item-name">${item.name}</div>
-                <div class="cart-item-price" style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
-                    ₹<input type="number" class="cart-item-price-input" value="${item.price.toFixed(2)}" step="0.01" min="0" onchange="updateCartPrice('${item.productId}', this.value)" style="width: 75px; padding: 2px 5px; border: 1px solid var(--panel-border); border-radius: 6px; font-size: 0.85rem; font-weight: 600; background: var(--input-bg); color: var(--text-primary); outline: none;">
-                    <span style="color: var(--text-secondary); font-size: 0.85rem;">/ ${item.unit || 'pcs'}</span>
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; width: 100%;">
+                <div style="flex: 1; min-width: 0;">
+                    <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary); line-height: 1.35; word-break: break-word;">${item.name}</div>
+                    <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
+                        <span style="font-size: 0.88rem; font-weight: 600; color: var(--text-secondary);">Rate: ₹</span>
+                        <input type="number" value="${item.price.toFixed(2)}" step="0.01" min="0" onchange="updateCartPrice('${item.productId}', this.value)" style="width: 90px; padding: 5px 8px; border: 1.5px solid var(--panel-border); border-radius: 8px; font-size: 0.98rem; font-weight: 700; color: var(--accent-color); background: var(--input-bg); outline: none;">
+                        <span style="font-size: 0.85rem; color: var(--text-secondary);">/ ${item.unit || 'pcs'}</span>
+                    </div>
+                </div>
+                <button onclick="removeFromCart('${item.productId}')" style="background: rgba(239,68,68,0.1); border: none; color: var(--danger-color); font-size: 1.15rem; width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;" title="Remove">✕</button>
+            </div>
+            
+            <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-top: 2px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,0.08);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 0.88rem; font-weight: 600; color: var(--text-secondary);">Qty:</span>
+                    <input type="number" value="${item.quantity}" min="1" step="1" onchange="updateCartQuantity('${item.productId}', this.value)" style="width: 80px; padding: 6px 10px; border: 1.5px solid var(--panel-border); border-radius: 8px; font-size: 1.05rem; font-weight: 700; color: var(--text-primary); background: var(--input-bg); outline: none; text-align: center;">
+                </div>
+                <div style="text-align: right;">
+                    <span style="font-size: 0.78rem; color: var(--text-secondary); display: block; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Total</span>
+                    <span style="font-weight: 800; font-size: 1.2rem; color: var(--success-color);">₹${itemTotal.toFixed(2)}</span>
                 </div>
             </div>
-            <div class="cart-item-qty-wrap">
-                <button class="cart-qty-btn" onclick="updateCartQuantity('${item.productId}', ${item.quantity - 1})" type="button">−</button>
-                <div class="cart-qty-display">${item.quantity}</div>
-                <button class="cart-qty-btn" onclick="updateCartQuantity('${item.productId}', ${item.quantity + 1})" type="button">＋</button>
-            </div>
-            <div class="cart-item-total">₹${itemTotal.toFixed(2)}</div>
-            <button class="cart-item-del" onclick="removeFromCart('${item.productId}')" title="Remove">✕</button>
         `;
         cartItemsList.appendChild(card);
     });
@@ -1322,6 +1558,7 @@ async function finalizeOrderAndShare() {
         id: newOrderId,
         customerId: currentCustomer.id,
         customerName: currentCustomer.name, // Snapshot name in case customer is later deleted
+        customerPhone: currentCustomer.phone || '',
         customerAddress: currentCustomer.address || '',
         items: [...cart],
         itemsTotal: itemsTotal,
@@ -1953,15 +2190,7 @@ function savePayment(e) {
         }
 
         if (remaining > 0) {
-            if (custOrders.length > 0) {
-                const latestOrder = custOrders[custOrders.length - 1];
-                latestOrder.paidAmount = (latestOrder.paidAmount || 0) + remaining;
-                affectedOrders.push(latestOrder.id);
-                cloudUpsertOrder(latestOrder);
-                showToast(`Payment recorded. ₹${remaining.toFixed(2)} applied as advance credit to latest bill.`);
-            } else {
-                showToast(`Payment recorded. ₹${remaining.toFixed(2)} was overpaid (no past bills to apply credit to).`);
-            }
+            showToast(`Payment recorded. ₹${(amount - remaining).toFixed(2)} applied to dues. Excess ₹${remaining.toFixed(2)} recorded in payment history.`);
         }
     }
 
@@ -2059,12 +2288,17 @@ function renderHomeDashboard() {
 
     const now = new Date();
 
-    // Calculate top customer and product stats
-    const customerStats = {};
-    const productStats = {};
+    // Calculate top customer and product stats (this month & overall)
+    const customerStatsMonth = {};
+    const customerStatsAll = {};
+    const productStatsMonth = {};
+    const productStatsAll = {};
 
     orders.forEach(order => {
-        totalRevenue += order.totalAmount;
+        // Calculate true net revenue (items total + additional costs) instead of totalAmount (which double-counts previous dues)
+        const netSales = (order.itemsTotal || 0) + (order.additionalCost || 0);
+        totalRevenue += netSales;
+
         const due = order.totalAmount - (order.paidAmount || 0);
         if (due > 0) {
             totalUnpaid += due;
@@ -2077,56 +2311,92 @@ function renderHomeDashboard() {
             }
         }
 
-        // Calculate customer stats (current month only)
-        if (order.customerId) {
-            const orderDate = new Date(order.date);
-            if (orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear()) {
-                const custId = order.customerId;
-                const custName = order.customerName || (customers.find(c => c.id === custId) || {}).name || 'Unknown Customer';
-                if (!customerStats[custId]) {
-                    customerStats[custId] = {
-                        name: custName,
-                        totalRevenue: 0
-                    };
+        const custId = order.customerId;
+        const custName = order.customerName || (customers.find(c => c.id === custId) || {}).name || 'Unknown Customer';
+        const orderDate = new Date(order.date);
+        const isCurrentMonth = orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear();
+
+        // Customer All-Time Stats
+        if (custId) {
+            if (!customerStatsAll[custId]) {
+                customerStatsAll[custId] = { name: custName, totalRevenue: 0 };
+            }
+            customerStatsAll[custId].totalRevenue += netSales;
+
+            if (isCurrentMonth) {
+                if (!customerStatsMonth[custId]) {
+                    customerStatsMonth[custId] = { name: custName, totalRevenue: 0 };
                 }
-                customerStats[custId].totalRevenue += order.totalAmount;
+                customerStatsMonth[custId].totalRevenue += netSales;
             }
         }
 
-        // Calculate product stats
+        // Product Stats
         (order.items || []).forEach(item => {
             const prodName = item.name || 'Unknown Product';
-            if (!productStats[prodName]) {
-                productStats[prodName] = {
-                    name: prodName,
-                    quantity: 0
-                };
+            if (!productStatsAll[prodName]) {
+                productStatsAll[prodName] = { name: prodName, quantity: 0 };
             }
-            productStats[prodName].quantity += item.quantity;
+            productStatsAll[prodName].quantity += item.quantity;
+
+            if (isCurrentMonth) {
+                if (!productStatsMonth[prodName]) {
+                    productStatsMonth[prodName] = { name: prodName, quantity: 0 };
+                }
+                productStatsMonth[prodName].quantity += item.quantity;
+            }
         });
     });
 
-    // Find top customer
+    // Find top customer (Month prioritized, fallback to All-Time)
     let topCustomerName = 'None';
     let topCustomerRevenue = 0;
-    Object.keys(customerStats).forEach(custId => {
-        const stats = customerStats[custId];
+    let isMonthCustomer = false;
+
+    Object.keys(customerStatsMonth).forEach(custId => {
+        const stats = customerStatsMonth[custId];
         if (stats.totalRevenue > topCustomerRevenue) {
             topCustomerRevenue = stats.totalRevenue;
             topCustomerName = stats.name;
+            isMonthCustomer = true;
         }
     });
 
-    // Find top product
+    if (topCustomerName === 'None') {
+        Object.keys(customerStatsAll).forEach(custId => {
+            const stats = customerStatsAll[custId];
+            if (stats.totalRevenue > topCustomerRevenue) {
+                topCustomerRevenue = stats.totalRevenue;
+                topCustomerName = stats.name;
+                isMonthCustomer = false;
+            }
+        });
+    }
+
+    // Find top product (Month prioritized, fallback to All-Time)
     let topProductName = 'None';
     let topProductQty = 0;
-    Object.keys(productStats).forEach(prodName => {
-        const stats = productStats[prodName];
+    let isMonthProduct = false;
+
+    Object.keys(productStatsMonth).forEach(prodName => {
+        const stats = productStatsMonth[prodName];
         if (stats.quantity > topProductQty) {
             topProductQty = stats.quantity;
             topProductName = stats.name;
+            isMonthProduct = true;
         }
     });
+
+    if (topProductName === 'None') {
+        Object.keys(productStatsAll).forEach(prodName => {
+            const stats = productStatsAll[prodName];
+            if (stats.quantity > topProductQty) {
+                topProductQty = stats.quantity;
+                topProductName = stats.name;
+                isMonthProduct = false;
+            }
+        });
+    }
 
     document.getElementById('dashTotalRevenue').textContent = `₹${totalRevenue.toFixed(2)}`;
 
@@ -2135,7 +2405,9 @@ function renderHomeDashboard() {
     if (topCustomerEl && topCustomerSubEl) {
         topCustomerEl.textContent = topCustomerName;
         topCustomerEl.title = topCustomerName;
-        topCustomerSubEl.textContent = topCustomerRevenue > 0 ? `₹${topCustomerRevenue.toFixed(2)} billing` : 'No billing';
+        topCustomerSubEl.textContent = topCustomerRevenue > 0
+            ? `₹${topCustomerRevenue.toFixed(2)} billing${isMonthCustomer ? '' : ' (all time)'}`
+            : 'No billing';
     }
 
     const topProductEl = document.getElementById('dashTopProduct');
@@ -2143,7 +2415,9 @@ function renderHomeDashboard() {
     if (topProductEl && topProductSubEl) {
         topProductEl.textContent = topProductName;
         topProductEl.title = topProductName;
-        topProductSubEl.textContent = topProductQty > 0 ? `${topProductQty} units sold` : 'No sales';
+        topProductSubEl.textContent = topProductQty > 0
+            ? `${topProductQty} units sold${isMonthProduct ? '' : ' (all time)'}`
+            : 'No sales';
     }
     const totalUnpaidEl = document.getElementById('dashTotalUnpaid');
     const unpaidBreakdownEl = document.getElementById('dashUnpaidBreakdown');
@@ -2153,8 +2427,6 @@ function renderHomeDashboard() {
     if (unpaidBreakdownEl) {
         unpaidBreakdownEl.textContent = `Cur: ₹${currentAmount.toFixed(2)} | Over: ₹${overdueAmount.toFixed(2)}`;
     }
-
-
 }
 
 function showUnpaidModal() {
@@ -2408,7 +2680,26 @@ function renderPaymentHistory() {
         return;
     }
 
-    const sortedHistory = [...paymentHistory].sort((a, b) => new Date(b.date) - new Date(a.date));
+    const searchInput = document.getElementById('paymentHistorySearchInput');
+    const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
+
+    let filteredHistory = paymentHistory;
+    if (query) {
+        filteredHistory = paymentHistory.filter(pay => {
+            const custName = (pay.customerName || '').toLowerCase();
+            const mode = (pay.mode || '').toLowerCase();
+            const amountStr = (pay.amount || 0).toString();
+            const dateStr = new Date(pay.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).toLowerCase();
+            return custName.includes(query) || mode.includes(query) || amountStr.includes(query) || dateStr.includes(query);
+        });
+    }
+
+    if (filteredHistory.length === 0) {
+        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No payment records found matching "${query.replace(/"/g, '&quot;')}".</p>`;
+        return;
+    }
+
+    const sortedHistory = [...filteredHistory].sort((a, b) => new Date(b.date) - new Date(a.date));
 
     sortedHistory.forEach(pay => {
         const d = new Date(pay.date);
@@ -2499,8 +2790,28 @@ function renderBills() {
         return;
     }
 
-    // Show newest first
-    const sortedOrders = [...orders].reverse();
+    const searchInput = document.getElementById('billSearchInput');
+    const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
+
+    // Filter orders based on query
+    let filteredOrders = orders;
+    if (query) {
+        filteredOrders = orders.filter(o => {
+            const invoiceNum = getInvoiceNumber(o).toLowerCase();
+            const custName = (o.customerName || (customers.find(c => c.id === o.customerId) || {}).name || '').toLowerCase();
+            const itemsStr = (o.items || []).map(i => i.name).join(' ').toLowerCase();
+            const dateStr = new Date(o.date).toLocaleDateString('en-IN').toLowerCase();
+            return invoiceNum.includes(query) || custName.includes(query) || itemsStr.includes(query) || dateStr.includes(query);
+        });
+    }
+
+    if (filteredOrders.length === 0) {
+        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No bills found matching "${query.replace(/"/g, '&quot;')}".</p>`;
+        return;
+    }
+
+    // Show newest orders first
+    const sortedOrders = [...filteredOrders].reverse();
 
     // Group by customer
     const groupedOrders = {};
@@ -2515,8 +2826,21 @@ function renderBills() {
         groupedOrders[customerName].push(order);
     });
 
-    Object.keys(groupedOrders).sort((a, b) => a.localeCompare(b)).forEach(customerName => {
-        const customerOrders = groupedOrders[customerName];
+    // Priority sorting for customer folders: Newest bill date first -> Alphabetical
+    const folderKeys = Object.keys(groupedOrders).sort((a, b) => {
+        const ordersA = groupedOrders[a];
+        const ordersB = groupedOrders[b];
+
+        const maxDateA = Math.max(...ordersA.map(o => new Date(o.date).getTime()));
+        const maxDateB = Math.max(...ordersB.map(o => new Date(o.date).getTime()));
+
+        if (maxDateA !== maxDateB) return maxDateB - maxDateA;
+        return a.localeCompare(b);
+    });
+
+    folderKeys.forEach((customerName, index) => {
+        // Ensure bills inside each folder are sorted newest first
+        const customerOrders = [...groupedOrders[customerName]].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
         let totalDue = 0;
         customerOrders.forEach(order => {
@@ -2528,6 +2852,9 @@ function renderBills() {
 
         const folderId = 'folder-' + customerName.replace(/[^a-zA-Z0-9]/g, '-');
 
+        // Auto-expand the very top folder or expand all if search query is active
+        const shouldExpand = index === 0 || query.length > 0;
+
         // Folder Header
         const folderHeader = document.createElement('div');
         folderHeader.className = 'customer-folder-header';
@@ -2538,14 +2865,14 @@ function renderBills() {
                 <span class="folder-badge">${customerOrders.length} Bill${customerOrders.length > 1 ? 's' : ''}</span>
                 ${totalDue > 0 ? `<span style="font-size:0.85rem; color:var(--danger-color); font-weight:bold; border: 1px solid var(--danger-color); padding: 2px 6px; border-radius: 4px;">Due: ₹${totalDue.toFixed(2)}</span>` : `<span style="font-size:0.85rem; color:var(--success-color); font-weight:bold;">All Paid</span>`}
             </div>
-            <span class="folder-icon" id="icon-${folderId}">▼</span>
+            <span class="folder-icon" id="icon-${folderId}">${shouldExpand ? '▲' : '▼'}</span>
         `;
 
         // Folder Content (Bills)
         const folderContent = document.createElement('div');
         folderContent.id = folderId;
         folderContent.className = 'customer-folder-content';
-        folderContent.style.display = 'none'; // Hidden by default
+        folderContent.style.display = shouldExpand ? 'block' : 'none';
 
         customerOrders.forEach(order => {
             const dateObj = new Date(order.date);
@@ -2636,13 +2963,26 @@ function toggleFolder(folderId) {
     const content = document.getElementById(folderId);
     const icon = document.getElementById('icon-' + folderId);
 
+    if (!content) return;
+
     if (content.style.display === 'none') {
         content.style.display = 'block';
-        icon.textContent = '▲';
+        if (icon) icon.textContent = '▲';
     } else {
         content.style.display = 'none';
-        icon.textContent = '▼';
+        if (icon) icon.textContent = '▼';
     }
+}
+
+function toggleAllFolders(expand) {
+    const contents = document.querySelectorAll('.customer-folder-content');
+    const icons = document.querySelectorAll('.folder-icon');
+    contents.forEach(content => {
+        content.style.display = expand ? 'block' : 'none';
+    });
+    icons.forEach(icon => {
+        icon.textContent = expand ? '▲' : '▼';
+    });
 }
 
 function shareBill(orderId) {
@@ -2668,6 +3008,7 @@ function printInvoice(orderId) {
     const customer = customers.find(c => c.id === order.customerId) || {};
     const customerName = order.customerName || customer.name || 'Customer';
     const customerAddress = order.customerAddress || customer.address || '';
+    const customerPhone = order.customerPhone || customer.phone || '';
 
     const dateObj = new Date(order.date);
     const dateString = dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -2677,19 +3018,20 @@ function printInvoice(orderId) {
 
     let itemsHtml = '';
     order.items.forEach((item, index) => {
+        const unitStr = item.unit ? ` ${item.unit}` : '';
         itemsHtml += `
             <tr>
                 <td style="padding: 12px 15px; border-bottom: 1px solid #eee;">${index + 1}</td>
                 <td style="padding: 12px 15px; border-bottom: 1px solid #eee;"><strong>${item.name}</strong></td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity.toFixed(2)}</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: right;">${item.price.toFixed(2)}</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: right;">0.00</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: right;">${(item.price * item.quantity).toFixed(2)}</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}${unitStr}</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: right;">₹ ${item.price.toFixed(2)}</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: right;">₹ ${(item.price * item.quantity).toFixed(2)}</td>
             </tr>
         `;
     });
 
     const invoiceNum = getInvoiceNumber(order);
+    const subTotal = order.itemsTotal || (order.items || []).reduce((s, i) => s + (i.price * i.quantity), 0);
     const printWindow = window.open('', '', 'width=800,height=900');
     printWindow.document.write(`
     <html>
@@ -2713,7 +3055,7 @@ function printInvoice(orderId) {
             .items-table th { background-color: #444; color: white; padding: 12px 15px; text-align: left; font-weight: 500; }
             .items-table th.right { text-align: right; }
             .items-table th.center { text-align: center; }
-            .totals { width: 40%; margin-left: auto; margin-right: 0; font-size: 14px; }
+            .totals { width: 45%; margin-left: auto; margin-right: 0; font-size: 14px; }
             .totals-row { display: flex; justify-content: space-between; padding: 8px 15px; }
             .totals-row.bold { font-weight: bold; }
             .balance-due-row { background-color: #F5F5F5; padding: 15px; font-weight: bold; margin-top: 10px; display: flex; justify-content: space-between; }
@@ -2764,7 +3106,6 @@ function printInvoice(orderId) {
                     <th>Item & Description</th>
                     <th class="center">Qty</th>
                     <th class="right">Rate</th>
-                    <th class="right">Discount</th>
                     <th class="right">Amount</th>
                 </tr>
             </thead>
@@ -2776,17 +3117,27 @@ function printInvoice(orderId) {
         <div class="totals">
             <div class="totals-row">
                 <span>Sub Total</span>
-                <span>${(order.totalAmount - (order.previousDue || 0)).toFixed(2)}</span>
+                <span>₹ ${subTotal.toFixed(2)}</span>
             </div>
+            ${order.additionalCost ? `
+            <div class="totals-row">
+                <span>${order.additionalCostReason || 'Extra Charges'}</span>
+                <span>₹ ${order.additionalCost.toFixed(2)}</span>
+            </div>` : ''}
             ${order.previousDue ? `
             <div class="totals-row">
                 <span>Previous Due</span>
-                <span>${order.previousDue.toFixed(2)}</span>
+                <span>₹ ${order.previousDue.toFixed(2)}</span>
             </div>` : ''}
-            <div class="totals-row bold" style="margin-top: 10px;">
+            <div class="totals-row bold" style="margin-top: 10px; border-top: 1px solid #ddd; padding-top: 10px;">
                 <span>Total</span>
                 <span>₹ ${order.totalAmount.toFixed(2)}</span>
             </div>
+            ${paid > 0 ? `
+            <div class="totals-row" style="color: #10b981;">
+                <span>Paid</span>
+                <span>-₹ ${paid.toFixed(2)}</span>
+            </div>` : ''}
             <div class="balance-due-row">
                 <span>Balance Due</span>
                 <span>₹ ${balanceDue.toFixed(2)}</span>
@@ -2824,6 +3175,16 @@ function deleteBill(orderId) {
     showCustomConfirm(`Are you sure you want to delete the bill for ${customerName} dated ${dateString}?`).then(confirmed => {
         if (!confirmed) return;
 
+        // Restore any old orders that were marked as adjusted with this deleted order
+        orders.forEach(o => {
+            if (o.adjustedWithOrderId === orderId) {
+                o.adjustedWithOrderId = null;
+                // Reset paidAmount back to 0 if it was auto-marked paid during rollover
+                o.paidAmount = 0;
+                cloudUpsertOrder(o);
+            }
+        });
+
         orders = orders.filter(o => o.id !== orderId);
         localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
 
@@ -2833,6 +3194,7 @@ function deleteBill(orderId) {
         }
 
         renderBills();
+        if (typeof renderHomeDashboard === 'function') renderHomeDashboard();
         showToast('Bill deleted successfully');
     });
 }
