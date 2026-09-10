@@ -97,58 +97,34 @@ function orderBelongsToCustomer(order, customer) {
     return false;
 }
 
+function isOrderAdjusted(order) {
+    if (!order || !order.adjustedWithOrderId) return false;
+    return orders.some(o => o.id === order.adjustedWithOrderId);
+}
+
 function getCustomerTotalDue(customer) {
     if (!customer) return 0;
     let totalDue = 0;
     orders.forEach(order => {
-        if (orderBelongsToCustomer(order, customer)) {
+        if (orderBelongsToCustomer(order, customer) && !isOrderAdjusted(order)) {
             totalDue += getOrderDue(order);
         }
     });
     return Math.round(totalDue * 100) / 100;
 }
 
-// --- Data Healing Function: Restores dues on legacy adjusted orders that were never actually paid ---
+// --- Data Healing Function: Rebuilds order rollover chains & prevents double-counted dues ---
 function healOrdersData() {
     if (!orders || orders.length === 0) return;
     let modified = false;
 
-    // Collect all real payment history records
-    const paymentsByOrder = {};
-    (paymentHistory || []).forEach(p => {
-        if (p.orderIds && Array.isArray(p.orderIds)) {
-            p.orderIds.forEach(oid => {
-                paymentsByOrder[oid] = (paymentsByOrder[oid] || 0) + (parseFloat(p.amount) || 0);
-            });
-        }
-    });
-
+    // 1. Ensure basic numerical validity of orders
     orders.forEach(order => {
-        // Ensure totalAmount is a valid number
         const safeTotal = getOrderTotal(order);
         if (order.totalAmount !== safeTotal) {
             order.totalAmount = safeTotal;
             modified = true;
         }
-
-        // Check if this order was auto-marked paid via old rollover (adjustedWithOrderId)
-        if (order.adjustedWithOrderId) {
-            const adjustingOrder = orders.find(o => o.id === order.adjustedWithOrderId);
-            // If the adjusting order does not exist or adjusting order is still unpaid
-            const adjustingDue = adjustingOrder ? getOrderDue(adjustingOrder) : 0;
-            const actualPaidFromHistory = paymentsByOrder[order.id] || 0;
-
-            // If adjusting order is unpaid or deleted, restore this order's pending status
-            if (!adjustingOrder || adjustingDue > 0) {
-                if (order.paidAmount >= safeTotal && actualPaidFromHistory < safeTotal) {
-                    order.paidAmount = actualPaidFromHistory;
-                    order.adjustedWithOrderId = null;
-                    modified = true;
-                }
-            }
-        }
-
-        // Cap paidAmount so it doesn't exceed totalAmount
         if (order.paidAmount > safeTotal && safeTotal > 0) {
             order.paidAmount = safeTotal;
             modified = true;
@@ -157,10 +133,47 @@ function healOrdersData() {
             order.paidAmount = 0;
             modified = true;
         }
+        // If adjustedWithOrderId points to a non-existent order, clear it
+        if (order.adjustedWithOrderId && !orders.some(o => o.id === order.adjustedWithOrderId)) {
+            order.adjustedWithOrderId = null;
+            modified = true;
+        }
+    });
+
+    // 2. Reconstruct rollover chains for past orders where previous dues were rolled into a newer bill
+    const customerBuckets = {};
+    orders.forEach(order => {
+        const key = order.customerId || (order.customerName || '').trim().toLowerCase() || 'unknown';
+        if (!customerBuckets[key]) customerBuckets[key] = [];
+        customerBuckets[key].push(order);
+    });
+
+    Object.values(customerBuckets).forEach(custOrders => {
+        // Sort oldest first
+        custOrders.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        for (let i = 0; i < custOrders.length; i++) {
+            const currentOrder = custOrders[i];
+            const prevDueVal = parseFloat(currentOrder.previousDue || currentOrder.previous_due || 0);
+
+            // If currentOrder rolled over previous dues, all earlier unadjusted orders should point to this rollover order
+            if (prevDueVal > 0) {
+                for (let j = 0; j < i; j++) {
+                    const earlierOrder = custOrders[j];
+                    if (!earlierOrder.adjustedWithOrderId) {
+                        earlierOrder.adjustedWithOrderId = currentOrder.id;
+                        modified = true;
+                    }
+                }
+            }
+        }
     });
 
     if (modified) {
         localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
+        if (typeof cloudUpsertOrder === 'function') {
+            orders.forEach(o => cloudUpsertOrder(o));
+        }
         console.log('Orders data successfully healed and synchronized.');
     }
 }
@@ -1128,69 +1141,6 @@ function updateCartPrice(productId, newPrice) {
     }
 }
 
-// --- Quick Select Product Chips ---
-function renderQuickProductChips() {
-    const container = document.getElementById('quickProductChips');
-    if (!container) return;
-    container.innerHTML = '';
-
-    const sortedProducts = [...products].sort((a, b) => a.name.localeCompare(b.name));
-    if (sortedProducts.length === 0) {
-        container.innerHTML = '<span style="font-size: 0.8rem; color: var(--text-secondary); font-style: italic;">No products available</span>';
-        return;
-    }
-
-    sortedProducts.forEach(prod => {
-        const inCartItem = cart.find(i => i.productId === prod.id);
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.style.cssText = `
-            padding: 8px 14px;
-            border-radius: 24px;
-            font-size: 0.88rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            border: 1.5px solid ${inCartItem ? 'var(--accent-color)' : 'var(--panel-border)'};
-            background: ${inCartItem ? 'rgba(37, 99, 235, 0.12)' : '#ffffff'};
-            color: ${inCartItem ? 'var(--accent-color)' : 'var(--text-primary)'};
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            min-height: 38px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.03);
-            flex-shrink: 0;
-        `;
-        const unitStr = prod.unit ? `/${prod.unit}` : '';
-        chip.innerHTML = `${prod.name} <span style="opacity: 0.85; font-weight: 700;">₹${prod.price.toFixed(2)}${unitStr}</span> ${inCartItem ? `<strong style="background: var(--accent-color); color: white; border-radius: 12px; padding: 2px 7px; font-size: 0.78rem;">${inCartItem.quantity}</strong>` : '<span style="font-weight: 800; font-size: 1rem; color: var(--accent-color);">＋</span>'}`;
-        chip.onclick = () => {
-            quickAddProductToCart(prod.id);
-        };
-        container.appendChild(chip);
-    });
-}
-
-function quickAddProductToCart(productId) {
-    const product = products.find(p => p.id === productId);
-    if (!product) return;
-
-    const existingItem = cart.find(item => item.productId === productId);
-    if (existingItem) {
-        existingItem.quantity += 1;
-    } else {
-        cart.push({
-            productId: product.id,
-            name: product.name,
-            price: product.price,
-            quantity: 1,
-            unit: product.unit || 'pcs'
-        });
-    }
-
-    renderCart();
-    renderQuickProductChips();
-}
-
 // --- Customer Combobox Search ---
 function onCustomerSearchInput(value) {
     const dropdown = document.getElementById('customerDropdownList');
@@ -1336,8 +1286,6 @@ function updateOrderStepUI() {
     const selectedCustomerLabel = document.getElementById('selectedCustomerLabel');
     const customerDetailsCard = document.getElementById('customerSelectedDetails');
 
-    renderQuickProductChips();
-
     if (currentCustomer) {
         // Customer selected: lock step 1 input, display rich detail card
         ind1.classList.remove('active');
@@ -1351,11 +1299,7 @@ function updateOrderStepUI() {
         }
 
         // Fill detail card with accurate total due
-        let totalDue = 0;
-        orders.filter(o => orderBelongsToCustomer(o, currentCustomer) && o.id !== editingOrderId).forEach(o => {
-            totalDue += getOrderDue(o);
-        });
-        totalDue = Math.round(totalDue * 100) / 100;
+        const totalDue = getCustomerTotalDue(currentCustomer);
 
         const phoneElem = document.getElementById('custDetailPhone');
         const addrElem = document.getElementById('custDetailAddress');
@@ -1460,10 +1404,7 @@ function renderCart() {
 
     let previousDue = 0;
     if (currentCustomer) {
-        orders.filter(o => orderBelongsToCustomer(o, currentCustomer) && o.id !== editingOrderId).forEach(order => {
-            previousDue += getOrderDue(order);
-        });
-        previousDue = Math.round(previousDue * 100) / 100;
+        previousDue = getCustomerTotalDue(currentCustomer);
     }
 
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
@@ -1753,31 +1694,17 @@ async function finalizeOrderAndShare() {
     }
 
     // Allocate payment:
-    // If user made an advance payment and previous dues were included, pay oldest dues first then this bill.
-    // Otherwise, apply directly to this new bill first.
-    let remainingPayment = advanceAmount;
-    const affectedOrders = [];
-
-    if (shouldIncludePrevDue && remainingPayment > 0) {
-        const custPastOrders = orders.filter(o => orderBelongsToCustomer(o, currentCustomer))
-            .sort((a, b) => new Date(a.date) - new Date(b.date));
-
+    // If previous dues were included, mark all older unadjusted orders as rolled into this new order
+    if (shouldIncludePrevDue) {
+        const custPastOrders = orders.filter(o => orderBelongsToCustomer(o, currentCustomer) && !isOrderAdjusted(o));
         for (const pastOrder of custPastOrders) {
-            if (remainingPayment <= 0) break;
-            const pastDue = getOrderDue(pastOrder);
-            if (pastDue > 0) {
-                const payToPast = Math.min(pastDue, remainingPayment);
-                pastOrder.paidAmount = getOrderPaid(pastOrder) + payToPast;
-                remainingPayment -= payToPast;
-                affectedOrders.push(pastOrder.id);
-                cloudUpsertOrder(pastOrder);
-            }
+            pastOrder.adjustedWithOrderId = newOrderId;
+            cloudUpsertOrder(pastOrder);
         }
     }
 
-    // Payment applied to this new order
-    const thisOrderPaidAmount = shouldIncludePrevDue ? remainingPayment : advanceAmount;
-    if (thisOrderPaidAmount > 0) {
+    const affectedOrders = [];
+    if (advanceAmount > 0) {
         affectedOrders.push(newOrderId);
     }
 
@@ -1793,7 +1720,7 @@ async function finalizeOrderAndShare() {
         additionalCost: additionalCost,
         additionalCostReason: additionalCostReason,
         totalAmount: grandTotal,
-        paidAmount: thisOrderPaidAmount,
+        paidAmount: advanceAmount,
         date: new Date().toISOString()
     };
 
@@ -2433,7 +2360,7 @@ function savePayment(e) {
             return;
         }
         let remaining = amount;
-        const custOrders = orders.filter(o => orderBelongsToCustomer(o, targetCustomer)).sort((a, b) => new Date(a.date) - new Date(b.date));
+        const custOrders = orders.filter(o => orderBelongsToCustomer(o, targetCustomer) && !isOrderAdjusted(o)).sort((a, b) => new Date(a.date) - new Date(b.date));
 
         for (const order of custOrders) {
             if (remaining <= 0) break;
@@ -2597,7 +2524,7 @@ function renderHomeDashboard() {
         totalRevenue += netSales;
 
         const due = getOrderDue(order);
-        if (due > 0) {
+        if (due > 0 && !isOrderAdjusted(order)) {
             totalUnpaid += due;
             const orderDate = new Date(order.date);
             const daysOld = (now - orderDate) / (1000 * 60 * 60 * 24);
@@ -2735,7 +2662,7 @@ function showUnpaidModal() {
     let unpaidOrders = [];
     orders.forEach(order => {
         const due = getOrderDue(order);
-        if (due > 0) {
+        if (due > 0 && !isOrderAdjusted(order)) {
             unpaidOrders.push({
                 ...order,
                 dueAmount: due
@@ -3110,7 +3037,7 @@ function setBillsFilter(filterType) {
 function updateUnpaidBillsBadge() {
     const badge = document.getElementById('unpaidBillsCountBadge');
     if (!badge) return;
-    const count = orders.filter(o => getOrderDue(o) > 0).length;
+    const count = orders.filter(o => getOrderDue(o) > 0 && !isOrderAdjusted(o)).length;
     badge.textContent = count;
     badge.style.display = count > 0 ? 'inline-block' : 'none';
 }
@@ -3134,9 +3061,9 @@ function renderBills() {
     let filteredOrders = orders;
 
     if (currentBillsFilter === 'unpaid') {
-        filteredOrders = filteredOrders.filter(o => getOrderDue(o) > 0);
+        filteredOrders = filteredOrders.filter(o => getOrderDue(o) > 0 && !isOrderAdjusted(o));
     } else if (currentBillsFilter === 'paid') {
-        filteredOrders = filteredOrders.filter(o => getOrderDue(o) <= 0);
+        filteredOrders = filteredOrders.filter(o => getOrderDue(o) <= 0 || isOrderAdjusted(o));
     }
 
     if (query) {
@@ -3193,7 +3120,9 @@ function renderBills() {
 
         let totalDue = 0;
         customerOrders.forEach(order => {
-            totalDue += getOrderDue(order);
+            if (!isOrderAdjusted(order)) {
+                totalDue += getOrderDue(order);
+            }
         });
 
         const folderDiv = document.createElement('div');
@@ -3247,7 +3176,7 @@ function renderBills() {
             const pending = getOrderDue(order);
 
             let footerHtml = '';
-            if (order.adjustedWithOrderId && pending <= 0) {
+            if (isOrderAdjusted(order)) {
                 const adjustedOrder = orders.find(o => o.id === order.adjustedWithOrderId);
                 let adjustedDateString = 'a newer bill';
                 if (adjustedOrder) {
