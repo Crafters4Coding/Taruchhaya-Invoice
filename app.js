@@ -21,6 +21,7 @@ let cart = []; // Array of { productId, quantity, price, name }
 let editingCustomerId = null;
 let editingProductId = null;
 let editingOrderId = null;
+let currentBillsFilter = 'all'; // 'all' | 'unpaid' | 'paid'
 
 function getInvoiceNumber(order) {
     if (!order || !order.id) return '';
@@ -40,6 +41,132 @@ function getInvoiceNumber(order) {
     }
     return order.id;
 }
+
+// --- Unified Accounting & Dues Helper Functions ---
+function getOrderTotal(order) {
+    if (!order) return 0;
+    const directTotal = parseFloat(order.totalAmount ?? order.total_amount);
+    if (!isNaN(directTotal) && directTotal > 0) {
+        return Math.round(directTotal * 100) / 100;
+    }
+    // Calculate from items + extra costs
+    const itemsSum = (order.items || []).reduce((sum, item) => {
+        const p = parseFloat(item.price) || 0;
+        const q = parseFloat(item.quantity) || 0;
+        return sum + (p * q);
+    }, 0);
+    const addCost = parseFloat(order.additionalCost ?? order.additional_cost ?? 0) || 0;
+    const prevDue = parseFloat(order.previousDue ?? order.previous_due ?? 0) || 0;
+    const computed = itemsSum + addCost + prevDue;
+    return Math.round(computed * 100) / 100;
+}
+
+function getOrderPaid(order) {
+    if (!order) return 0;
+    const paid = parseFloat(order.paidAmount ?? order.paid_amount ?? 0);
+    return isNaN(paid) ? 0 : Math.round(paid * 100) / 100;
+}
+
+function getOrderDue(order) {
+    if (!order) return 0;
+    const total = getOrderTotal(order);
+    const paid = getOrderPaid(order);
+    const due = Math.round((total - paid) * 100) / 100;
+    return due > 0.005 ? due : 0;
+}
+
+// Robust matcher tolerant of ID type (string vs number), phone, or customer name
+function orderBelongsToCustomer(order, customer) {
+    if (!order || !customer) return false;
+    // Match by ID
+    if (order.customerId && customer.id && String(order.customerId).trim() === String(customer.id).trim()) {
+        return true;
+    }
+    // Match by phone if both have non-empty phone
+    if (order.customerPhone && customer.phone) {
+        const p1 = String(order.customerPhone).replace(/\D/g, '');
+        const p2 = String(customer.phone).replace(/\D/g, '');
+        if (p1.length >= 7 && p1 === p2) return true;
+    }
+    // Match by customer name (case-insensitive, trimmed)
+    const orderName = (order.customerName || '').trim().toLowerCase();
+    const custName = (customer.name || '').trim().toLowerCase();
+    if (orderName && custName && orderName === custName) {
+        return true;
+    }
+    return false;
+}
+
+function getCustomerTotalDue(customer) {
+    if (!customer) return 0;
+    let totalDue = 0;
+    orders.forEach(order => {
+        if (orderBelongsToCustomer(order, customer)) {
+            totalDue += getOrderDue(order);
+        }
+    });
+    return Math.round(totalDue * 100) / 100;
+}
+
+// --- Data Healing Function: Restores dues on legacy adjusted orders that were never actually paid ---
+function healOrdersData() {
+    if (!orders || orders.length === 0) return;
+    let modified = false;
+
+    // Collect all real payment history records
+    const paymentsByOrder = {};
+    (paymentHistory || []).forEach(p => {
+        if (p.orderIds && Array.isArray(p.orderIds)) {
+            p.orderIds.forEach(oid => {
+                paymentsByOrder[oid] = (paymentsByOrder[oid] || 0) + (parseFloat(p.amount) || 0);
+            });
+        }
+    });
+
+    orders.forEach(order => {
+        // Ensure totalAmount is a valid number
+        const safeTotal = getOrderTotal(order);
+        if (order.totalAmount !== safeTotal) {
+            order.totalAmount = safeTotal;
+            modified = true;
+        }
+
+        // Check if this order was auto-marked paid via old rollover (adjustedWithOrderId)
+        if (order.adjustedWithOrderId) {
+            const adjustingOrder = orders.find(o => o.id === order.adjustedWithOrderId);
+            // If the adjusting order does not exist or adjusting order is still unpaid
+            const adjustingDue = adjustingOrder ? getOrderDue(adjustingOrder) : 0;
+            const actualPaidFromHistory = paymentsByOrder[order.id] || 0;
+
+            // If adjusting order is unpaid or deleted, restore this order's pending status
+            if (!adjustingOrder || adjustingDue > 0) {
+                if (order.paidAmount >= safeTotal && actualPaidFromHistory < safeTotal) {
+                    order.paidAmount = actualPaidFromHistory;
+                    order.adjustedWithOrderId = null;
+                    modified = true;
+                }
+            }
+        }
+
+        // Cap paidAmount so it doesn't exceed totalAmount
+        if (order.paidAmount > safeTotal && safeTotal > 0) {
+            order.paidAmount = safeTotal;
+            modified = true;
+        }
+        if (isNaN(order.paidAmount) || order.paidAmount < 0) {
+            order.paidAmount = 0;
+            modified = true;
+        }
+    });
+
+    if (modified) {
+        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
+        console.log('Orders data successfully healed and synchronized.');
+    }
+}
+
+// Run healing once on script evaluation
+healOrdersData();
 
 // --- Supabase Cloud Sync Logic ---
 // You can enter your credentials here to hardcode them, 
@@ -188,49 +315,64 @@ async function loadCloudData() {
             return;
         }
 
-        // If cloud database has data, it becomes the source of truth
-        customers = dbCust.map(r => ({
-            id: r.id,
-            name: r.name,
-            phone: r.phone || '',
-            address: r.address || '',
-            createdAt: r.created_at
-        }));
+        // If cloud database has data, merge safely rather than blindly wiping local data
+        if (dbCust.length > 0) {
+            customers = dbCust.map(r => ({
+                id: r.id,
+                name: r.name,
+                phone: r.phone || '',
+                address: r.address || '',
+                createdAt: r.created_at
+            }));
+        } else if (localCust.length > 0) {
+            customers = localCust;
+        }
 
-        products = dbProd.map(r => ({
-            id: r.id,
-            name: r.name,
-            price: parseFloat(r.price),
-            unit: r.unit || 'pcs'
-        }));
+        if (dbProd.length > 0) {
+            products = dbProd.map(r => ({
+                id: r.id,
+                name: r.name,
+                price: parseFloat(r.price),
+                unit: r.unit || 'pcs'
+            }));
+        } else if (localProd.length > 0) {
+            products = localProd;
+        }
 
-        orders = dbOrd.map(r => ({
-            id: r.id,
-            customerId: r.customer_id,
-            customerName: r.customer_name || '',
-            items: r.items || [],
-            itemsTotal: parseFloat(r.items_total || 0),
-            previousDue: parseFloat(r.previous_due || 0),
-            additionalCost: parseFloat(r.additional_cost || 0),
-            additionalCostReason: r.additional_cost_reason || '',
-            totalAmount: parseFloat(r.total_amount || 0),
-            paidAmount: parseFloat(r.paid_amount || 0),
-            date: r.date,
-            adjustedWithOrderId: r.adjusted_with_order_id || null
-        }));
+        if (dbOrd.length > 0) {
+            orders = dbOrd.map(r => ({
+                id: r.id,
+                customerId: r.customer_id,
+                customerName: r.customer_name || '',
+                items: r.items || [],
+                itemsTotal: parseFloat(r.items_total || 0),
+                previousDue: parseFloat(r.previous_due || 0),
+                additionalCost: parseFloat(r.additional_cost || 0),
+                additionalCostReason: r.additional_cost_reason || '',
+                totalAmount: parseFloat(r.total_amount || 0),
+                paidAmount: parseFloat(r.paid_amount || 0),
+                date: r.date,
+                adjustedWithOrderId: r.adjusted_with_order_id || null
+            }));
+        } else if (localOrd.length > 0) {
+            orders = localOrd;
+        }
 
-        paymentHistory = dbPay.map(r => ({
-            id: r.id,
-            customerId: r.customer_id,
-            customerName: r.customer_name || '',
-            amount: parseFloat(r.amount || 0),
-            mode: r.mode || 'Cash',
-            date: r.date
-        }));
+        if (dbPay.length > 0) {
+            paymentHistory = dbPay.map(r => ({
+                id: r.id,
+                customerId: r.customer_id,
+                customerName: r.customer_name || '',
+                amount: parseFloat(r.amount || 0),
+                mode: r.mode || 'Cash',
+                date: r.date
+            }));
+        } else if (localPay.length > 0) {
+            paymentHistory = localPay;
+        }
 
-        // Remove mock data if it exists
-        customers = customers.filter(c => c.id !== 'cust_1' && c.id !== 'cust_2');
-        products = products.filter(p => p.id !== 'prod_1' && p.id !== 'prod_2' && p.id !== 'prod_3');
+        // Heal orders data after cloud sync
+        healOrdersData();
 
         // Cache back to local storage
         localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
@@ -548,9 +690,10 @@ function saveCustomer(e) {
         customers.push(newCustomer);
         // Sync new customer to cloud
         cloudUpsertCustomer(newCustomer);
+        
+        // Auto-select in combobox
         setTimeout(() => {
-            document.getElementById('customerSelect').value = newCustomer.id;
-            handleCustomerChange();
+            selectCustomerFromCombobox(newCustomer.id);
         }, 50);
     }
 
@@ -561,6 +704,7 @@ function saveCustomer(e) {
         renderCustomersList();
     }
     closeModal('customerModal');
+    showToast(editingCustomerId ? 'Customer updated successfully' : 'Customer added successfully', 'success');
 }
 
 function deleteCustomer(id) {
@@ -581,9 +725,8 @@ function deleteCustomer(id) {
         // If currently selected customer is deleted, reset selection
         if (currentCustomer && currentCustomer.id === id) {
             currentCustomer = null;
-            const select = document.getElementById('customerSelect');
-            if (select) select.value = '';
-            // Also clear cart just in case
+            const searchInput = document.getElementById('customerSearch');
+            if (searchInput) searchInput.value = '';
             cart = [];
             if (typeof renderCart === 'function') renderCart();
             if (typeof updateOrderStepUI === 'function') updateOrderStepUI();
@@ -653,6 +796,7 @@ function renderCustomerSelect(filterTerm = '') {
 
 async function handleCustomerChange() {
     const select = document.getElementById('customerSelect');
+    if (!select) return;
     select.size = 1; // Reset size if it was expanded
     const newSelectedId = select.value;
 
@@ -959,7 +1103,7 @@ function removeFromCart(productId) {
 }
 
 function updateCartQuantity(productId, newQty) {
-    const qty = parseInt(newQty, 10);
+    const qty = parseFloat(newQty);
     if (isNaN(qty) || qty <= 0) {
         removeFromCart(productId);
         return;
@@ -1060,10 +1204,7 @@ function onCustomerSearchInput(value) {
         dropdown.innerHTML = `<div style="padding: 12px; text-align: center; color: var(--text-secondary); font-size: 0.88rem;">No customer found</div>`;
     } else {
         filtered.forEach(cust => {
-            let totalDue = 0;
-            orders.filter(o => o.customerId === cust.id).forEach(o => {
-                totalDue += (o.totalAmount - (o.paidAmount || 0));
-            });
+            const totalDue = getCustomerTotalDue(cust);
 
             const item = document.createElement('div');
             item.style.cssText = `
@@ -1209,11 +1350,12 @@ function updateOrderStepUI() {
             selectedCustomerLabel.textContent = currentCustomer.name;
         }
 
-        // Fill detail card
+        // Fill detail card with accurate total due
         let totalDue = 0;
-        orders.filter(o => o.customerId === currentCustomer.id && o.id !== editingOrderId).forEach(o => {
-            totalDue += (o.totalAmount - (o.paidAmount || 0));
+        orders.filter(o => orderBelongsToCustomer(o, currentCustomer) && o.id !== editingOrderId).forEach(o => {
+            totalDue += getOrderDue(o);
         });
+        totalDue = Math.round(totalDue * 100) / 100;
 
         const phoneElem = document.getElementById('custDetailPhone');
         const addrElem = document.getElementById('custDetailAddress');
@@ -1264,16 +1406,15 @@ function updateOrderStepUI() {
 function renderCart() {
     const cartItemsList = document.getElementById('cartItemsList');
     const emptyMsg = document.getElementById('emptyCartMessage');
-    const placeOrderBtn = document.getElementById('placeOrderBtn');
     const cartBarTotal = document.getElementById('cartBarTotal');
     const cartBarItemCount = document.getElementById('cartBarItemCount');
 
+    if (!cartItemsList) return;
+
     cartItemsList.innerHTML = '';
-    let grandTotal = 0;
 
     if (cart.length === 0) {
         if (emptyMsg) emptyMsg.style.display = 'block';
-        if (placeOrderBtn) placeOrderBtn.disabled = true;
         if (cartBarTotal) cartBarTotal.textContent = '₹0.00';
         if (cartBarItemCount) cartBarItemCount.textContent = '0 items';
         updateOrderStepUI();
@@ -1281,7 +1422,8 @@ function renderCart() {
     }
 
     if (emptyMsg) emptyMsg.style.display = 'none';
-    if (placeOrderBtn) placeOrderBtn.disabled = !currentCustomer;
+
+    let grandTotal = 0;
 
     cart.forEach(item => {
         const itemTotal = item.price * item.quantity;
@@ -1289,9 +1431,8 @@ function renderCart() {
 
         const card = document.createElement('div');
         card.className = 'cart-item-card';
-        card.style.cssText = 'display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--panel-border); border-radius: 14px; background: #ffffff; margin-top: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.03);';
         card.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; width: 100%;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; gap: 8px;">
                 <div style="flex: 1; min-width: 0;">
                     <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary); line-height: 1.35; word-break: break-word;">${item.name}</div>
                     <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
@@ -1306,7 +1447,7 @@ function renderCart() {
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-top: 2px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,0.08);">
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <span style="font-size: 0.88rem; font-weight: 600; color: var(--text-secondary);">Qty:</span>
-                    <input type="number" value="${item.quantity}" min="1" step="1" onchange="updateCartQuantity('${item.productId}', this.value)" style="width: 80px; padding: 6px 10px; border: 1.5px solid var(--panel-border); border-radius: 8px; font-size: 1.05rem; font-weight: 700; color: var(--text-primary); background: var(--input-bg); outline: none; text-align: center;">
+                    <input type="number" value="${item.quantity}" min="0.01" step="any" onchange="updateCartQuantity('${item.productId}', this.value)" style="width: 80px; padding: 6px 10px; border: 1.5px solid var(--panel-border); border-radius: 8px; font-size: 1.05rem; font-weight: 700; color: var(--text-primary); background: var(--input-bg); outline: none; text-align: center;">
                 </div>
                 <div style="text-align: right;">
                     <span style="font-size: 0.78rem; color: var(--text-secondary); display: block; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Total</span>
@@ -1319,9 +1460,10 @@ function renderCart() {
 
     let previousDue = 0;
     if (currentCustomer) {
-        orders.filter(o => o.customerId === currentCustomer.id && o.id !== editingOrderId).forEach(order => {
-            previousDue += (order.totalAmount - (order.paidAmount || 0));
+        orders.filter(o => orderBelongsToCustomer(o, currentCustomer) && o.id !== editingOrderId).forEach(order => {
+            previousDue += getOrderDue(order);
         });
+        previousDue = Math.round(previousDue * 100) / 100;
     }
 
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
@@ -1407,7 +1549,7 @@ function placeOrder() {
 
         confirmText += `<br><br>New Grand Total: ₹${newGrandTotal.toFixed(2)}`;
 
-        const diff = newGrandTotal - order.totalAmount;
+        const diff = newGrandTotal - getOrderTotal(order);
         if (diff !== 0) {
             const diffColor = diff > 0 ? 'var(--danger-color)' : 'var(--success-color)';
             const diffSign = diff > 0 ? '+' : '';
@@ -1421,6 +1563,9 @@ function placeOrder() {
             paymentRecSection.style.display = 'none';
         }
 
+        const prevDueToggle = document.getElementById('includePreviousDueContainer');
+        if (prevDueToggle) prevDueToggle.style.display = 'none';
+
         const saveBtn = document.getElementById('saveAndShareBtn');
         if (saveBtn) {
             saveBtn.innerHTML = '✨ Save Changes & Share';
@@ -1431,10 +1576,23 @@ function placeOrder() {
         return;
     }
 
-    let previousDue = 0;
-    orders.filter(o => o.customerId === currentCustomer.id).forEach(order => {
-        previousDue += (order.totalAmount - (order.paidAmount || 0));
-    });
+    const prevDueToggle = document.getElementById('includePreviousDueContainer');
+    const customerPendingDue = getCustomerTotalDue(currentCustomer);
+
+    if (prevDueToggle) {
+        if (customerPendingDue > 0) {
+            prevDueToggle.style.display = 'block';
+            const amountText = document.getElementById('confirmPrevDueAmountText');
+            if (amountText) amountText.textContent = `₹${customerPendingDue.toFixed(2)}`;
+        } else {
+            prevDueToggle.style.display = 'none';
+        }
+    }
+
+    const includePrevDueCheckbox = document.getElementById('includePreviousDueCheckbox');
+    const shouldIncludePrevDue = (includePrevDueCheckbox && customerPendingDue > 0) ? includePrevDueCheckbox.checked : false;
+
+    const previousDue = shouldIncludePrevDue ? customerPendingDue : 0;
 
     let rawGrandTotal = itemsTotal + previousDue + additionalCost;
     let grandTotal = rawGrandTotal;
@@ -1452,6 +1610,8 @@ function placeOrder() {
     }
     if (previousDue > 0) {
         confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Previous Due: ₹${previousDue.toFixed(2)}</span>`;
+    } else if (customerPendingDue > 0 && !shouldIncludePrevDue) {
+        confirmText += `<br><span style="font-size:0.9rem; color:#64748b;">(Pending Dues of ₹${customerPendingDue.toFixed(2)} not added to this bill)</span>`;
     }
     if (Math.abs(roundOff) > 0.001) {
         confirmText += `<br><span style="font-size:1rem; color:#64748b;">Round Off: ₹${roundOff > 0 ? '+' : ''}${roundOff.toFixed(2)}</span>`;
@@ -1469,6 +1629,48 @@ function placeOrder() {
     document.getElementById('confirmGrandTotal').dataset.grandTotal = grandTotal;
 
     openModal('confirmOrderModal');
+}
+
+function toggleConfirmPrevDue(isChecked) {
+    if (!currentCustomer) return;
+    const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const additionalCostAmountInput = document.getElementById('additionalCostAmount');
+    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+    const additionalCostReasonInput = document.getElementById('additionalCostReason');
+    const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
+
+    const customerPendingDue = getCustomerTotalDue(currentCustomer);
+    const previousDue = isChecked ? customerPendingDue : 0;
+
+    let rawGrandTotal = itemsTotal + previousDue + additionalCost;
+    let grandTotal = rawGrandTotal;
+    let roundOff = 0;
+    if (rawGrandTotal % 1 !== 0) {
+        grandTotal = Math.round(rawGrandTotal);
+        roundOff = grandTotal - rawGrandTotal;
+    }
+
+    let confirmText = `Items Total: ₹${itemsTotal.toFixed(2)}`;
+    if (additionalCost > 0) {
+        const reasonDisplay = additionalCostReason ? additionalCostReason : 'Misc';
+        confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${reasonDisplay}: ₹${additionalCost.toFixed(2)}</span>`;
+    }
+    if (previousDue > 0) {
+        confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Previous Due: ₹${previousDue.toFixed(2)}</span>`;
+    } else if (customerPendingDue > 0) {
+        confirmText += `<br><span style="font-size:0.9rem; color:#64748b;">(Pending Dues of ₹${customerPendingDue.toFixed(2)} not added to this bill)</span>`;
+    }
+    if (Math.abs(roundOff) > 0.001) {
+        confirmText += `<br><span style="font-size:1rem; color:#64748b;">Round Off: ₹${roundOff > 0 ? '+' : ''}${roundOff.toFixed(2)}</span>`;
+    }
+    confirmText += `<br><br>Grand Total: ₹${grandTotal.toFixed(2)}`;
+
+    const confirmGrandTotal = document.getElementById('confirmGrandTotal');
+    if (confirmGrandTotal) {
+        confirmGrandTotal.dataset.originalHtml = confirmText;
+        confirmGrandTotal.dataset.grandTotal = grandTotal;
+        updateConfirmTotal();
+    }
 }
 
 function updateConfirmTotal() {
@@ -1516,17 +1718,13 @@ async function finalizeOrderAndShare() {
     }
     const newOrderId = 'ord_' + Date.now() + '_' + nextInvoiceNum;
 
-    let previousDue = 0;
-    orders.filter(o => o.customerId === currentCustomer.id).forEach(order => {
-        const pending = order.totalAmount - (order.paidAmount || 0);
-        if (pending !== 0) {
-            previousDue += pending;
-            order.paidAmount = order.totalAmount; // Mark as paid/adjusted
-            order.adjustedWithOrderId = newOrderId;
-            // Sync adjusted order to cloud
-            cloudUpsertOrder(order);
-        }
-    });
+    // Check if user chose to include previous dues on this printed bill
+    const includePrevDueCheckbox = document.getElementById('includePreviousDueCheckbox');
+    const shouldIncludePrevDue = includePrevDueCheckbox ? includePrevDueCheckbox.checked : false;
+
+    // Customer existing pending dues across all previous orders
+    const existingDues = getCustomerTotalDue(currentCustomer);
+    const previousDue = shouldIncludePrevDue ? existingDues : 0;
 
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
     const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
@@ -1554,6 +1752,35 @@ async function finalizeOrderAndShare() {
         return;
     }
 
+    // Allocate payment:
+    // If user made an advance payment and previous dues were included, pay oldest dues first then this bill.
+    // Otherwise, apply directly to this new bill first.
+    let remainingPayment = advanceAmount;
+    const affectedOrders = [];
+
+    if (shouldIncludePrevDue && remainingPayment > 0) {
+        const custPastOrders = orders.filter(o => orderBelongsToCustomer(o, currentCustomer))
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        for (const pastOrder of custPastOrders) {
+            if (remainingPayment <= 0) break;
+            const pastDue = getOrderDue(pastOrder);
+            if (pastDue > 0) {
+                const payToPast = Math.min(pastDue, remainingPayment);
+                pastOrder.paidAmount = getOrderPaid(pastOrder) + payToPast;
+                remainingPayment -= payToPast;
+                affectedOrders.push(pastOrder.id);
+                cloudUpsertOrder(pastOrder);
+            }
+        }
+    }
+
+    // Payment applied to this new order
+    const thisOrderPaidAmount = shouldIncludePrevDue ? remainingPayment : advanceAmount;
+    if (thisOrderPaidAmount > 0) {
+        affectedOrders.push(newOrderId);
+    }
+
     const newOrder = {
         id: newOrderId,
         customerId: currentCustomer.id,
@@ -1566,7 +1793,7 @@ async function finalizeOrderAndShare() {
         additionalCost: additionalCost,
         additionalCostReason: additionalCostReason,
         totalAmount: grandTotal,
-        paidAmount: advanceAmount,
+        paidAmount: thisOrderPaidAmount,
         date: new Date().toISOString()
     };
 
@@ -1585,7 +1812,7 @@ async function finalizeOrderAndShare() {
             amount: advanceAmount,
             mode: advanceModeInput ? advanceModeInput.value : 'UPI',
             date: new Date().toISOString(),
-            orderIds: [newOrderId]
+            orderIds: [...new Set(affectedOrders)]
         };
         paymentHistory.push(historyRecord);
         localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
@@ -1611,8 +1838,14 @@ async function finalizeOrderAndShare() {
     const custSelect = document.getElementById('customerSelect');
     if (custSelect) custSelect.value = '';
 
+    const customerSearch = document.getElementById('customerSearch');
+    if (customerSearch) customerSearch.value = '';
+
+    updateOrderStepUI();
     renderCart();
     renderBills();
+    renderCustomersList();
+    renderHomeDashboard();
 
     closeModal('confirmOrderModal');
     btn.innerHTML = originalText;
@@ -1629,11 +1862,11 @@ function startEditBill(orderId) {
     }
 
     editingOrderId = orderId;
-    currentCustomer = customers.find(c => c.id === order.customerId);
+    currentCustomer = customers.find(c => orderBelongsToCustomer(order, c));
 
     if (!currentCustomer) {
         // Fallback if customer was deleted but we have snapshotted name
-        currentCustomer = { id: order.customerId, name: order.customerName || 'Unknown Customer' };
+        currentCustomer = { id: order.customerId, name: order.customerName || 'Unknown Customer', phone: order.customerPhone || '' };
     }
 
     // Load items into cart
@@ -1656,10 +1889,9 @@ function startEditBill(orderId) {
         document.getElementById('editBillInvoiceNum').textContent = getInvoiceNumber(order);
     }
 
-    // Set customer selection dropdown value
+    // Set customer selection dropdown value & input
     const custSelect = document.getElementById('customerSelect');
     if (custSelect) {
-        // If customer is not in customers array, temporarily add an option for them
         if (!customers.some(c => c.id === currentCustomer.id)) {
             const opt = document.createElement('option');
             opt.value = currentCustomer.id;
@@ -1669,10 +1901,16 @@ function startEditBill(orderId) {
         custSelect.value = currentCustomer.id;
     }
 
+    const customerSearch = document.getElementById('customerSearch');
+    if (customerSearch) {
+        customerSearch.value = currentCustomer.name;
+    }
+
     // Switch to order view
     switchView('mainView');
 
     // Re-render cart and update steps
+    updateOrderStepUI();
     renderCart();
 
     // Change Place Order button label
@@ -1696,6 +1934,9 @@ function cancelEditBill() {
     const custSelect = document.getElementById('customerSelect');
     if (custSelect) custSelect.value = '';
 
+    const customerSearch = document.getElementById('customerSearch');
+    if (customerSearch) customerSearch.value = '';
+
     // Hide banner
     const banner = document.getElementById('editBillBanner');
     if (banner) banner.style.display = 'none';
@@ -1704,6 +1945,7 @@ function cancelEditBill() {
     const placeOrderBtn = document.getElementById('placeOrderBtn');
     if (placeOrderBtn) placeOrderBtn.innerHTML = 'Place Order →';
 
+    updateOrderStepUI();
     renderCart();
     switchView('billsView');
 }
@@ -1761,7 +2003,7 @@ async function finalizeBillEdits() {
     if (rawNewGrandTotal % 1 !== 0) {
         newGrandTotal = Math.round(rawNewGrandTotal);
     }
-    const difference = newGrandTotal - order.totalAmount;
+    const difference = newGrandTotal - getOrderTotal(order);
 
     // Update order values
     order.items = [...cart];
@@ -1815,6 +2057,9 @@ async function finalizeBillEdits() {
     const custSelect = document.getElementById('customerSelect');
     if (custSelect) custSelect.value = '';
 
+    const customerSearch = document.getElementById('customerSearch');
+    if (customerSearch) customerSearch.value = '';
+
     // Hide banner
     const banner = document.getElementById('editBillBanner');
     if (banner) banner.style.display = 'none';
@@ -1829,6 +2074,9 @@ async function finalizeBillEdits() {
         paymentRecSection.style.display = 'block';
     }
 
+    const prevDueToggle = document.getElementById('includePreviousDueContainer');
+    if (prevDueToggle) prevDueToggle.style.display = 'block';
+
     // Reset save button onclick and text
     const saveBtn = document.getElementById('saveAndShareBtn');
     if (saveBtn) {
@@ -1836,8 +2084,10 @@ async function finalizeBillEdits() {
         saveBtn.setAttribute('onclick', 'finalizeOrderAndShare()');
     }
 
+    updateOrderStepUI();
     renderCart();
     renderBills();
+    renderCustomersList();
     renderHomeDashboard();
 
     closeModal('confirmOrderModal');
@@ -2039,15 +2289,20 @@ async function shareAsImage(element, title) {
 
 // --- Payments Logic ---
 function handlePaymentCustomerChange() {
+    return onPaymentCustomerChange();
+}
+
+function onPaymentCustomerChange() {
     const custSelect = document.getElementById('paymentCustomerSelect');
     const amountInput = document.getElementById('paymentAmount');
     const invoiceGroup = document.getElementById('paymentInvoiceGroup');
     const dateGroup = document.getElementById('paymentDateGroup');
     const invoiceIdInput = document.getElementById('paymentDisplayInvoiceId');
-    const dateInput = document.getElementById('paymentInvoiceDate');
     const billInput = document.getElementById('paymentBillId');
 
     if (billInput) billInput.value = '';
+
+    if (!custSelect) return;
 
     if (custSelect.value === 'add_new') {
         openModal('customerModal');
@@ -2066,12 +2321,13 @@ function handlePaymentCustomerChange() {
     }
 
     const customerId = custSelect.value;
-    const custOrders = orders.filter(o => o.customerId === customerId);
+    const targetCust = customers.find(c => String(c.id) === String(customerId)) || { id: customerId };
+    const custOrders = orders.filter(o => orderBelongsToCustomer(o, targetCust));
     let totalDue = 0;
     const unpaidOrders = [];
 
     custOrders.forEach(order => {
-        const due = order.totalAmount - (order.paidAmount || 0);
+        const due = getOrderDue(order);
         if (due > 0) {
             totalDue += due;
             unpaidOrders.push(order);
@@ -2126,7 +2382,7 @@ function openPaymentModal(orderId = null) {
             if (invoiceGroup) invoiceGroup.style.display = 'block';
             if (dateGroup) dateGroup.style.display = 'block';
 
-            const pending = order.totalAmount - (order.paidAmount || 0);
+            const pending = getOrderDue(order);
             if (amountInput) amountInput.value = pending > 0 ? pending.toFixed(2) : 0;
         }
     } else {
@@ -2159,11 +2415,14 @@ function savePayment(e) {
     }
 
     const affectedOrders = [];
+    const targetCustomer = customers.find(c => String(c.id) === String(customerId)) || { id: customerId };
 
     if (orderId) {
         const order = orders.find(o => o.id === orderId);
         if (order) {
-            order.paidAmount = (order.paidAmount || 0) + amount;
+            const currentPaid = getOrderPaid(order);
+            const total = getOrderTotal(order);
+            order.paidAmount = Math.min(total, currentPaid + amount);
             affectedOrders.push(orderId);
             // Sync updated order to cloud
             cloudUpsertOrder(order);
@@ -2174,14 +2433,14 @@ function savePayment(e) {
             return;
         }
         let remaining = amount;
-        const custOrders = orders.filter(o => o.customerId === customerId).sort((a, b) => new Date(a.date) - new Date(b.date));
+        const custOrders = orders.filter(o => orderBelongsToCustomer(o, targetCustomer)).sort((a, b) => new Date(a.date) - new Date(b.date));
 
         for (const order of custOrders) {
             if (remaining <= 0) break;
-            const pending = order.totalAmount - (order.paidAmount || 0);
+            const pending = getOrderDue(order);
             if (pending > 0) {
                 const pay = Math.min(pending, remaining);
-                order.paidAmount = (order.paidAmount || 0) + pay;
+                order.paidAmount = getOrderPaid(order) + pay;
                 remaining -= pay;
                 affectedOrders.push(order.id);
                 // Sync updated order to cloud
@@ -2198,7 +2457,7 @@ function savePayment(e) {
     const historyRecord = {
         id: 'pay_' + Date.now(),
         customerId: customerId,
-        customerName: (customers.find(c => c.id === customerId) || {}).name || 'Unknown',
+        customerName: (customers.find(c => String(c.id) === String(customerId)) || {}).name || (targetCustomer ? targetCustomer.name : 'Unknown'),
         amount: amount,
         mode: paymentMode,
         date: new Date().toISOString(),
@@ -2211,8 +2470,17 @@ function savePayment(e) {
 
     localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
     closeModal('paymentModal');
+    
+    // Update all views
     renderBills();
     renderPaymentHistory();
+    renderCustomersList();
+    renderHomeDashboard();
+    updateOrderStepUI();
+    if (document.getElementById('unpaidModal') && document.getElementById('unpaidModal').classList.contains('active')) {
+        showUnpaidModal();
+    }
+    showToast('Payment recorded successfully!', 'success');
 }
 
 // --- Customers View Management ---
@@ -2226,14 +2494,25 @@ function renderCustomersList() {
         return;
     }
 
-    const sortedCustomers = [...customers].sort((a, b) => a.name.localeCompare(b.name));
+    const searchInput = document.getElementById('customerListSearchInput');
+    const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
+
+    let sortedCustomers = [...customers].sort((a, b) => a.name.localeCompare(b.name));
+    if (query) {
+        sortedCustomers = sortedCustomers.filter(c => 
+            (c.name || '').toLowerCase().includes(query) || 
+            (c.phone || '').toLowerCase().includes(query) || 
+            (c.address || '').toLowerCase().includes(query)
+        );
+    }
+
+    if (sortedCustomers.length === 0) {
+        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No customers matching "${query.replace(/"/g, '&quot;')}".</p>`;
+        return;
+    }
 
     sortedCustomers.forEach(cust => {
-        let totalDue = 0;
-        const custOrders = orders.filter(o => o.customerId === cust.id);
-        custOrders.forEach(order => {
-            totalDue += (order.totalAmount - (order.paidAmount || 0));
-        });
+        const totalDue = getCustomerTotalDue(cust);
 
         const d = new Date(cust.createdAt || Date.now());
         const dateString = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -2259,19 +2538,37 @@ function renderCustomersList() {
                     ${totalDue > 0 ? 'Due: ₹' + totalDue.toFixed(2) : 'No Dues'}
                 </span>
                 
-                <div style="display: flex; gap: 12px; align-items: center;">
+                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    ${totalDue > 0 ? `<button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.85rem; border-color: var(--success-color); color: var(--success-color); background: transparent; border-radius: 8px; font-weight: 600;" onclick="openPaymentForCustomer('${cust.id}')">💰 Pay</button>` : ''}
                     <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 0.9rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px; display: flex; align-items: center; gap: 4px;" onclick="editCustomer('${cust.id}')">✏️ Edit</button>
-                    
                     <button class="btn-danger" style="padding: 4px 8px; font-size: 0.9rem; border: none; background: transparent; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--danger-color);" onclick="deleteCustomer('${cust.id}')">🗑️ Delete</button>
                 </div>
             </div>
             
             <div style="margin-top: 5px;">
-                <button class="btn btn-secondary" style="padding: 6px 16px; font-size: 0.95rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px;" onclick="switchView('billsView')">View Bills</button>
+                <button class="btn btn-secondary" style="padding: 6px 16px; font-size: 0.95rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px;" onclick="viewCustomerBills('${cust.name}')">View Bills</button>
             </div>
         `;
         container.appendChild(card);
     });
+}
+
+function openPaymentForCustomer(customerId) {
+    openPaymentModal();
+    const custSelect = document.getElementById('paymentCustomerSelect');
+    if (custSelect) {
+        custSelect.value = customerId;
+        onPaymentCustomerChange();
+    }
+}
+
+function viewCustomerBills(customerName) {
+    switchView('billsView');
+    const billSearchInput = document.getElementById('billSearchInput');
+    if (billSearchInput) {
+        billSearchInput.value = customerName;
+        renderBills();
+    }
 }
 
 // --- Dashboard Management ---
@@ -2299,7 +2596,7 @@ function renderHomeDashboard() {
         const netSales = (order.itemsTotal || 0) + (order.additionalCost || 0);
         totalRevenue += netSales;
 
-        const due = order.totalAmount - (order.paidAmount || 0);
+        const due = getOrderDue(order);
         if (due > 0) {
             totalUnpaid += due;
             const orderDate = new Date(order.date);
@@ -2312,7 +2609,7 @@ function renderHomeDashboard() {
         }
 
         const custId = order.customerId;
-        const custName = order.customerName || (customers.find(c => c.id === custId) || {}).name || 'Unknown Customer';
+        const custName = order.customerName || (customers.find(c => orderBelongsToCustomer(order, c)) || {}).name || 'Unknown Customer';
         const orderDate = new Date(order.date);
         const isCurrentMonth = orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear();
 
@@ -2337,13 +2634,13 @@ function renderHomeDashboard() {
             if (!productStatsAll[prodName]) {
                 productStatsAll[prodName] = { name: prodName, quantity: 0 };
             }
-            productStatsAll[prodName].quantity += item.quantity;
+            productStatsAll[prodName].quantity += (parseFloat(item.quantity) || 0);
 
             if (isCurrentMonth) {
                 if (!productStatsMonth[prodName]) {
                     productStatsMonth[prodName] = { name: prodName, quantity: 0 };
                 }
-                productStatsMonth[prodName].quantity += item.quantity;
+                productStatsMonth[prodName].quantity += (parseFloat(item.quantity) || 0);
             }
         });
     });
@@ -2437,7 +2734,7 @@ function showUnpaidModal() {
     
     let unpaidOrders = [];
     orders.forEach(order => {
-        const due = order.totalAmount - (order.paidAmount || 0);
+        const due = getOrderDue(order);
         if (due > 0) {
             unpaidOrders.push({
                 ...order,
@@ -2448,12 +2745,25 @@ function showUnpaidModal() {
     
     // Sort by date (newest first)
     unpaidOrders.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    const searchInput = document.getElementById('unpaidSearchInput');
+    const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
+    if (query) {
+        unpaidOrders = unpaidOrders.filter(order => {
+            const invoiceNum = getInvoiceNumber(order).toLowerCase();
+            const custName = (order.customerName || (customers.find(c => orderBelongsToCustomer(order, c)) || {}).name || '').toLowerCase();
+            const phone = (order.customerPhone || '').toLowerCase();
+            return invoiceNum.includes(query) || custName.includes(query) || phone.includes(query);
+        });
+    }
     
     if (unpaidOrders.length === 0) {
-        container.innerHTML = '<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No unpaid invoices found.</p>';
+        container.innerHTML = query 
+            ? `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No unpaid invoices matching "${query.replace(/"/g, '&quot;')}".</p>`
+            : '<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">🎉 No unpaid invoices! All dues are clear.</p>';
     } else {
         unpaidOrders.forEach(order => {
-            const customerName = order.customerName || (customers.find(c => c.id === order.customerId) || {}).name || 'Unknown Customer';
+            const customerName = order.customerName || (customers.find(c => orderBelongsToCustomer(order, c)) || {}).name || 'Unknown Customer';
             const invoiceNum = getInvoiceNumber(order);
             const dateStr = new Date(order.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
             
@@ -2487,6 +2797,10 @@ function showUnpaidModal() {
     openModal('unpaidModal');
 }
 
+function filterUnpaidInvoices() {
+    showUnpaidModal();
+}
+
 function showTopCustomersModal() {
     const container = document.getElementById('topCustomersListContainer');
     if (!container) return;
@@ -2501,7 +2815,7 @@ function showTopCustomersModal() {
             const orderDate = new Date(order.date);
             if (orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear()) {
                 const custId = order.customerId;
-                const custName = order.customerName || (customers.find(c => c.id === custId) || {}).name || 'Unknown Customer';
+                const custName = order.customerName || (customers.find(c => orderBelongsToCustomer(order, c)) || {}).name || 'Unknown Customer';
                 if (!customerStats[custId]) {
                     customerStats[custId] = {
                         id: custId,
@@ -2510,7 +2824,8 @@ function showTopCustomersModal() {
                         orderCount: 0
                     };
                 }
-                customerStats[custId].totalRevenue += order.totalAmount;
+                const netSales = (order.itemsTotal || 0) + (order.additionalCost || 0);
+                customerStats[custId].totalRevenue += netSales;
                 customerStats[custId].orderCount += 1;
             }
         }
@@ -2780,7 +3095,29 @@ function showBillPreviewModal(orderId) {
 }
 
 // --- Bills Management ---
+function setBillsFilter(filterType) {
+    currentBillsFilter = filterType;
+    document.querySelectorAll('.filter-tab-btn').forEach(btn => {
+        if (btn.dataset.filter === filterType) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+    renderBills();
+}
+
+function updateUnpaidBillsBadge() {
+    const badge = document.getElementById('unpaidBillsCountBadge');
+    if (!badge) return;
+    const count = orders.filter(o => getOrderDue(o) > 0).length;
+    badge.textContent = count;
+    badge.style.display = count > 0 ? 'inline-block' : 'none';
+}
+
 function renderBills() {
+    updateUnpaidBillsBadge();
+
     const container = document.getElementById('billsListContainer');
     if (!container) return;
     container.innerHTML = '';
@@ -2793,12 +3130,19 @@ function renderBills() {
     const searchInput = document.getElementById('billSearchInput');
     const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
 
-    // Filter orders based on query
+    // Filter orders based on query and current tab filter
     let filteredOrders = orders;
+
+    if (currentBillsFilter === 'unpaid') {
+        filteredOrders = filteredOrders.filter(o => getOrderDue(o) > 0);
+    } else if (currentBillsFilter === 'paid') {
+        filteredOrders = filteredOrders.filter(o => getOrderDue(o) <= 0);
+    }
+
     if (query) {
-        filteredOrders = orders.filter(o => {
+        filteredOrders = filteredOrders.filter(o => {
             const invoiceNum = getInvoiceNumber(o).toLowerCase();
-            const custName = (o.customerName || (customers.find(c => c.id === o.customerId) || {}).name || '').toLowerCase();
+            const custName = (o.customerName || (customers.find(c => orderBelongsToCustomer(o, c)) || {}).name || '').toLowerCase();
             const itemsStr = (o.items || []).map(i => i.name).join(' ').toLowerCase();
             const dateStr = new Date(o.date).toLocaleDateString('en-IN').toLowerCase();
             return invoiceNum.includes(query) || custName.includes(query) || itemsStr.includes(query) || dateStr.includes(query);
@@ -2806,7 +3150,12 @@ function renderBills() {
     }
 
     if (filteredOrders.length === 0) {
-        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No bills found matching "${query.replace(/"/g, '&quot;')}".</p>`;
+        let emptyMsg = `No bills found matching "${query.replace(/"/g, '&quot;')}".`;
+        if (!query) {
+            if (currentBillsFilter === 'unpaid') emptyMsg = '🎉 No unpaid bills found! All bills are fully paid.';
+            else if (currentBillsFilter === 'paid') emptyMsg = 'No fully paid bills yet.';
+        }
+        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">${emptyMsg}</p>`;
         return;
     }
 
@@ -2817,7 +3166,7 @@ function renderBills() {
     const groupedOrders = {};
     sortedOrders.forEach(order => {
         const customerName = order.customerName ||
-            (customers.find(c => c.id === order.customerId) || {}).name ||
+            (customers.find(c => orderBelongsToCustomer(order, c)) || {}).name ||
             'Unknown Customer';
 
         if (!groupedOrders[customerName]) {
@@ -2844,7 +3193,7 @@ function renderBills() {
 
         let totalDue = 0;
         customerOrders.forEach(order => {
-            totalDue += (order.totalAmount - (order.paidAmount || 0));
+            totalDue += getOrderDue(order);
         });
 
         const folderDiv = document.createElement('div');
@@ -2852,8 +3201,8 @@ function renderBills() {
 
         const folderId = 'folder-' + customerName.replace(/[^a-zA-Z0-9]/g, '-');
 
-        // Auto-expand the very top folder or expand all if search query is active
-        const shouldExpand = index === 0 || query.length > 0;
+        // Auto-expand the very top folder or expand all if search query is active or unpaid filter is on
+        const shouldExpand = index === 0 || query.length > 0 || currentBillsFilter === 'unpaid';
 
         // Folder Header
         const folderHeader = document.createElement('div');
@@ -2885,19 +3234,20 @@ function renderBills() {
             billCard.className = 'bill-card';
 
             let itemsHtml = '<ul class="bill-items">';
-            order.items.forEach(item => {
-                itemsHtml += `<li><span>${item.name} × ${item.quantity}</span><span>₹${(item.price * item.quantity).toFixed(2)}</span></li>`;
+            (order.items || []).forEach(item => {
+                itemsHtml += `<li><span>${item.name} × ${item.quantity}</span><span>₹${((parseFloat(item.price) || 0) * (parseFloat(item.quantity) || 0)).toFixed(2)}</span></li>`;
             });
             if (order.previousDue > 0) {
-                itemsHtml += `<li style="border-top: 1px dashed var(--panel-border); padding-top: 6px; margin-top: 4px; color: var(--danger-color); font-weight: 500;"><span>Previous Due</span><span>₹${order.previousDue.toFixed(2)}</span></li>`;
+                itemsHtml += `<li style="border-top: 1px dashed var(--panel-border); padding-top: 6px; margin-top: 4px; color: var(--danger-color); font-weight: 500;"><span>Previous Due</span><span>₹${(parseFloat(order.previousDue) || 0).toFixed(2)}</span></li>`;
             }
             itemsHtml += '</ul>';
 
-            const paid = order.paidAmount || 0;
-            const pending = order.totalAmount - paid;
+            const total = getOrderTotal(order);
+            const paid = getOrderPaid(order);
+            const pending = getOrderDue(order);
 
             let footerHtml = '';
-            if (order.adjustedWithOrderId) {
+            if (order.adjustedWithOrderId && pending <= 0) {
                 const adjustedOrder = orders.find(o => o.id === order.adjustedWithOrderId);
                 let adjustedDateString = 'a newer bill';
                 if (adjustedOrder) {
@@ -2907,7 +3257,7 @@ function renderBills() {
                 footerHtml = `
                     <div style="display:flex; justify-content:space-between; width:100%; margin-bottom: 8px;">
                         <span>Total</span>
-                        <strong>₹${order.totalAmount.toFixed(2)}</strong>
+                        <strong>₹${total.toFixed(2)}</strong>
                     </div>
                     <div style="text-align:center; color:var(--accent-color); font-size:0.85rem; font-weight:600; padding: 6px; border: 1px dashed var(--accent-color); border-radius: 6px;">
                         🔄 Adjusted with the ${adjustedDateString}
@@ -2917,7 +3267,7 @@ function renderBills() {
                 footerHtml = `
                     <div style="display:flex; justify-content:space-between; width:100%;">
                         <span>Total</span>
-                        <strong>₹${order.totalAmount.toFixed(2)}</strong>
+                        <strong>₹${total.toFixed(2)}</strong>
                     </div>
                     <div style="display:flex; justify-content:space-between; width:100%; color:var(--text-secondary); font-size:0.9rem;">
                         <span>Paid</span>
@@ -2927,7 +3277,7 @@ function renderBills() {
                         <span>Due</span>
                         <span>₹${pending.toFixed(2)}</span>
                     </div>
-                    ${pending > 0 ? `<button class="btn btn-secondary full-width" style="margin-top:8px; font-size:0.85rem; padding:6px;" onclick="openPaymentModal('${order.id}')">💰 Record Payment</button>` : `<div style="text-align:center; color:var(--success-color); font-size:0.85rem; margin-top:8px; font-weight:600;">✅ Fully Paid</div>`}
+                    ${pending > 0 ? `<button class="btn btn-secondary full-width" style="margin-top:8px; font-size:0.85rem; padding:6px; border-color:var(--success-color); color:var(--success-color); font-weight:600;" onclick="openPaymentModal('${order.id}')">💰 Record Payment</button>` : `<div style="text-align:center; color:var(--success-color); font-size:0.85rem; margin-top:8px; font-weight:600;">✅ Fully Paid</div>`}
                 `;
             }
 
