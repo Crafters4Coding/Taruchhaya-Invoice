@@ -1806,3 +1806,38 @@ select:focus {
         padding-top: 1.5rem;
     }
 }
+
+/* Bills Filter Tabs */
+.bills-filter-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 15px;
+    border-bottom: 1px solid var(--panel-border);
+    padding-bottom: 8px;
+    overflow-x: auto;
+}
+
+.filter-tab-btn {
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: transparent;
+    border: 1px solid var(--panel-border);
+    color: var(--text-secondary);
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.filter-tab-btn:hover {
+    background: rgba(37, 99, 235, 0.05);
+    color: var(--accent-color);
+}
+
+.filter-tab-btn.active {
+    background: var(--accent-color);
+    color: #ffffff;
+    border-color: var(--accent-color);
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
