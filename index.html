@@ -284,16 +284,22 @@
             <!-- Bills View -->
             <main class="view-page" id="billsView" style="display:none; height: 100%; padding-bottom: 90px;">
                 <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; gap: 15px; flex-wrap: wrap;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; gap: 15px; flex-wrap: wrap;">
                         <h2>Saved Bills</h2>
                         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex: 1; justify-content: flex-end;">
-                            <div class="search-field-wrap" style="max-width: 300px; width: 100%;">
+                            <div class="search-field-wrap" style="max-width: 280px; width: 100%;">
                                 <span class="search-icon" style="left: 12px; font-size: 1rem; position: absolute; pointer-events: none;">🔍</span>
                                 <input type="text" id="billSearchInput" class="premium-search-input" placeholder="Search by invoice #, customer..." oninput="renderBills()" style="padding: 0.5rem 0.5rem 0.5rem 2.2rem; font-size: 0.9rem;">
                             </div>
                             <button class="btn btn-secondary" onclick="toggleAllFolders(true)" style="font-size: 0.85rem; padding: 6px 12px;">Expand All</button>
                             <button class="btn btn-secondary" onclick="toggleAllFolders(false)" style="font-size: 0.85rem; padding: 6px 12px;">Collapse All</button>
                         </div>
+                    </div>
+                    <!-- Bills Filter Tabs -->
+                    <div class="bills-filter-tabs" style="display: flex; gap: 8px; margin-bottom: 15px; border-bottom: 1px solid var(--panel-border); padding-bottom: 8px; overflow-x: auto;">
+                        <button id="filterTabAll" class="filter-tab-btn active" onclick="setBillsFilter('all')">All Bills</button>
+                        <button id="filterTabUnpaid" class="filter-tab-btn" onclick="setBillsFilter('unpaid')">⚠️ Unpaid Only (<span id="unpaidBillsCountBadge">0</span>)</button>
+                        <button id="filterTabPaid" class="filter-tab-btn" onclick="setBillsFilter('paid')">✅ Fully Paid</button>
                     </div>
                     <div id="billsListContainer" style="flex: 1; overflow-y: auto;">
                         <!-- Bills will be injected here -->
@@ -320,9 +326,15 @@
             <!-- Customers View -->
             <main class="view-page" id="customersView" style="display:none; height: 100%; padding-bottom: 90px;">
                 <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; gap: 15px; flex-wrap: wrap;">
                         <h2>Customers</h2>
-                        <button class="btn btn-primary" onclick="openModal('customerModal')">+ New Customer</button>
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex: 1; justify-content: flex-end;">
+                            <div class="search-field-wrap" style="max-width: 280px; width: 100%;">
+                                <span class="search-icon" style="left: 12px; font-size: 1rem; position: absolute; pointer-events: none;">🔍</span>
+                                <input type="text" id="customerListSearchInput" class="premium-search-input" placeholder="Search customer by name or phone..." oninput="renderCustomersList()" style="padding: 0.5rem 0.5rem 0.5rem 2.2rem; font-size: 0.9rem;">
+                            </div>
+                            <button class="btn btn-primary" onclick="openModal('customerModal')" style="white-space: nowrap;">+ New Customer</button>
+                        </div>
                     </div>
                     <div id="customersListContainer" style="flex: 1; overflow-y: auto;">
                         <!-- Customers will be injected here -->
@@ -405,10 +417,16 @@
 
     <!-- Unpaid Invoices Modal -->
     <div id="unpaidModal" class="modal">
-        <div class="modal-content glass-panel" style="max-width: 600px;">
+        <div class="modal-content glass-panel" style="max-width: 650px; width: 95%;">
             <span class="close" onclick="closeModal('unpaidModal')">&times;</span>
-            <h2 style="margin-bottom: 15px;">Unpaid Invoices</h2>
-            <div id="unpaidListContainer" style="max-height: 400px; overflow-y: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 10px; flex-wrap: wrap;">
+                <h2 style="margin: 0;">Unpaid Invoices</h2>
+                <div class="search-field-wrap" style="max-width: 260px; width: 100%;">
+                    <span class="search-icon" style="left: 10px; font-size: 0.9rem; position: absolute; pointer-events: none;">🔍</span>
+                    <input type="text" id="unpaidSearchInput" class="premium-search-input" placeholder="Search unpaid bills..." oninput="filterUnpaidInvoices(this.value)" style="padding: 0.4rem 0.5rem 0.4rem 2rem; font-size: 0.85rem;">
+                </div>
+            </div>
+            <div id="unpaidListContainer" style="max-height: 440px; overflow-y: auto;">
                 <!-- Unpaid list injected here -->
             </div>
         </div>
@@ -436,17 +454,24 @@
         </div>
     </div>
 
-    <!-- Confirm Order & Share Modal -->
+    <!-- Confirm Order Modal -->
     <div id="confirmOrderModal" class="modal">
-        <div class="modal-content glass-panel" style="text-align: center; transition: all 0.3s ease;">
+        <div class="modal-content glass-panel" style="text-align: center; transition: all 0.3s ease; max-width: 520px; width: 95%;">
             <span class="close" onclick="closeModal('confirmOrderModal')">&times;</span>
-            <div style="font-size: 3rem; margin-bottom: 10px;">📦</div>
-            <h2 style="color: #0070f3; margin-bottom: 10px;">Ready to Place Order?</h2>
-            <p id="confirmCustomerName" style="margin-bottom: 5px; font-weight: 500; font-size: 1.1rem;"></p>
+            <div style="font-size: 2.5rem; margin-bottom: 8px;">📦</div>
+            <h2 style="color: #0070f3; margin-bottom: 8px;">Ready to Place Order?</h2>
+            <p id="confirmCustomerName" style="margin-bottom: 5px; font-weight: 600; font-size: 1.1rem;"></p>
             <p id="confirmGrandTotal"
-                style="margin-bottom: 20px; font-size: 1.4rem; font-weight: bold; color: #28a745;"></p>
+                style="margin-bottom: 15px; font-size: 1.35rem; font-weight: bold; color: #28a745;"></p>
 
-            <p style="color: #666; font-size: 0.9rem; margin-bottom: 20px;">Clicking below will save the bill to your
+            <div id="includePreviousDueContainer" style="display:none; background: rgba(239, 68, 68, 0.06); border: 1.5px dashed var(--danger-color); border-radius: 8px; padding: 10px 14px; margin-bottom: 15px; text-align: left;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; font-weight: 500; color: var(--danger-color);">
+                    <input type="checkbox" id="includePreviousDueCheckbox" checked onchange="toggleConfirmPrevDue(this.checked)" style="accent-color: var(--accent-color); width: 16px; height: 16px;">
+                    <span>Include previous dues (<strong id="confirmPrevDueAmountText">₹0.00</strong>) in this invoice total</span>
+                </label>
+            </div>
+
+            <p style="color: #666; font-size: 0.88rem; margin-bottom: 16px;">Clicking below will save the bill to your
                 records and immediately open the share menu.</p>
 
             <div
