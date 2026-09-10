@@ -1215,6 +1215,28 @@ document.addEventListener('click', (e) => {
     }
 });
 
+// --- Add Product to Cart ---
+function addProductToCart(productId) {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+
+    const existingItem = cart.find(item => item.productId === productId);
+    if (existingItem) {
+        existingItem.quantity += 1;
+    } else {
+        cart.push({
+            productId: product.id,
+            name: product.name,
+            price: product.price,
+            quantity: 1,
+            unit: product.unit || 'pcs'
+        });
+    }
+
+    renderCart();
+}
+const quickAddProductToCart = addProductToCart;
+
 // --- Product Combobox Search ---
 function onProductSearchInput(value) {
     const dropdown = document.getElementById('productDropdownList');
@@ -1243,7 +1265,7 @@ function onProductSearchInput(value) {
             item.onmouseover = () => item.style.background = 'rgba(37, 99, 235, 0.08)';
             item.onmouseout = () => item.style.background = 'transparent';
             item.onclick = () => {
-                quickAddProductToCart(prod.id);
+                addProductToCart(prod.id);
                 if (dropdown) dropdown.style.display = 'none';
                 const searchInput = document.getElementById('productSearch');
                 if (searchInput) searchInput.value = '';
