@@ -1357,6 +1357,11 @@ function updateOrderStepUI() {
         cartCountLabel.textContent = itemCount === 0 ? '0 items in cart' : `${itemCount} item${itemCount > 1 ? 's' : ''} in cart`;
     }
 
+    const placeOrderBtn = document.getElementById('placeOrderBtn');
+    if (placeOrderBtn) {
+        placeOrderBtn.disabled = !(cart.length > 0 && currentCustomer);
+    }
+
     if (cart.length > 0 && currentCustomer) {
         ind3.classList.add('active');
         ind3.classList.remove('done');
@@ -1659,146 +1664,154 @@ async function finalizeOrderAndShare() {
     }
 
     const btn = document.getElementById('saveAndShareBtn');
-    const originalText = btn.innerHTML;
-    btn.innerHTML = '⏳ Processing...';
-    btn.disabled = true;
+    const originalText = btn ? btn.innerHTML : '✨ Save & Share Bill';
+    if (btn) {
+        btn.innerHTML = '⏳ Processing...';
+        btn.disabled = true;
+    }
 
-    // Small delay for interactive feel
-    await new Promise(r => setTimeout(r, 400));
+    try {
+        // Small delay for interactive feel
+        await new Promise(r => setTimeout(r, 400));
 
-    const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
-    // Calculate the next invoice number
-    let nextInvoiceNum = 1001;
-    if (orders.length > 0) {
-        const numbers = orders.map(o => {
-            const parts = o.id.split('_');
-            return parts.length >= 3 ? parseInt(parts[2], 10) : 0;
-        }).filter(num => !isNaN(num) && num > 0);
-        if (numbers.length > 0) {
-            nextInvoiceNum = Math.max(...numbers) + 1;
+        // Calculate the next invoice number
+        let nextInvoiceNum = 1001;
+        if (orders.length > 0) {
+            const numbers = orders.map(o => {
+                const parts = o.id.split('_');
+                return parts.length >= 3 ? parseInt(parts[2], 10) : 0;
+            }).filter(num => !isNaN(num) && num > 0);
+            if (numbers.length > 0) {
+                nextInvoiceNum = Math.max(...numbers) + 1;
+            }
         }
-    }
-    const newOrderId = 'ord_' + Date.now() + '_' + nextInvoiceNum;
+        const newOrderId = 'ord_' + Date.now() + '_' + nextInvoiceNum;
 
-    // Check if user chose to include previous dues on this printed bill
-    const includePrevDueCheckbox = document.getElementById('includePreviousDueCheckbox');
-    const shouldIncludePrevDue = includePrevDueCheckbox ? includePrevDueCheckbox.checked : false;
+        // Check if user chose to include previous dues on this printed bill
+        const includePrevDueCheckbox = document.getElementById('includePreviousDueCheckbox');
+        const shouldIncludePrevDue = includePrevDueCheckbox ? includePrevDueCheckbox.checked : false;
 
-    // Customer existing pending dues across all previous orders
-    const existingDues = getCustomerTotalDue(currentCustomer);
-    const previousDue = shouldIncludePrevDue ? existingDues : 0;
+        // Customer existing pending dues across all previous orders
+        const existingDues = getCustomerTotalDue(currentCustomer);
+        const previousDue = shouldIncludePrevDue ? existingDues : 0;
 
-    const additionalCostAmountInput = document.getElementById('additionalCostAmount');
-    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
-    const additionalCostReasonInput = document.getElementById('additionalCostReason');
-    const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
+        const additionalCostAmountInput = document.getElementById('additionalCostAmount');
+        const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+        const additionalCostReasonInput = document.getElementById('additionalCostReason');
+        const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
 
-    let rawGrandTotal = itemsTotal + previousDue + additionalCost;
-    let grandTotal = rawGrandTotal;
-    if (rawGrandTotal % 1 !== 0) {
-        grandTotal = Math.round(rawGrandTotal);
-    }
-
-    const advancePaymentInput = document.getElementById('advancePaymentAmount');
-    const advanceModeInput = document.getElementById('advancePaymentMode');
-    let advanceAmount = 0;
-    if (advancePaymentInput) {
-        advanceAmount = parseFloat(advancePaymentInput.value || 0);
-        if (isNaN(advanceAmount) || advanceAmount < 0) advanceAmount = 0;
-    }
-
-    if (advanceAmount > grandTotal && grandTotal > 0) {
-        showToast('Payment received cannot be greater than the grand total.');
-        btn.innerHTML = originalText;
-        btn.disabled = false;
-        return;
-    }
-
-    // Allocate payment:
-    // If previous dues were included, mark all older unadjusted orders as rolled into this new order
-    if (shouldIncludePrevDue) {
-        const custPastOrders = orders.filter(o => orderBelongsToCustomer(o, currentCustomer) && !isOrderAdjusted(o));
-        for (const pastOrder of custPastOrders) {
-            pastOrder.adjustedWithOrderId = newOrderId;
-            cloudUpsertOrder(pastOrder);
+        let rawGrandTotal = itemsTotal + previousDue + additionalCost;
+        let grandTotal = rawGrandTotal;
+        if (rawGrandTotal % 1 !== 0) {
+            grandTotal = Math.round(rawGrandTotal);
         }
-    }
 
-    const affectedOrders = [];
-    if (advanceAmount > 0) {
-        affectedOrders.push(newOrderId);
-    }
+        const advancePaymentInput = document.getElementById('advancePaymentAmount');
+        const advanceModeInput = document.getElementById('advancePaymentMode');
+        let advanceAmount = 0;
+        if (advancePaymentInput) {
+            advanceAmount = parseFloat(advancePaymentInput.value || 0);
+            if (isNaN(advanceAmount) || advanceAmount < 0) advanceAmount = 0;
+        }
 
-    const newOrder = {
-        id: newOrderId,
-        customerId: currentCustomer.id,
-        customerName: currentCustomer.name, // Snapshot name in case customer is later deleted
-        customerPhone: currentCustomer.phone || '',
-        customerAddress: currentCustomer.address || '',
-        items: [...cart],
-        itemsTotal: itemsTotal,
-        previousDue: previousDue,
-        additionalCost: additionalCost,
-        additionalCostReason: additionalCostReason,
-        totalAmount: grandTotal,
-        paidAmount: advanceAmount,
-        date: new Date().toISOString()
-    };
+        if (advanceAmount > grandTotal && grandTotal > 0) {
+            showToast('Payment received cannot be greater than the grand total.');
+            return;
+        }
 
-    // Save to orders & localStorage
-    orders.push(newOrder);
-    localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
-    // Sync new order to cloud
-    cloudUpsertOrder(newOrder);
+        // Allocate payment:
+        // If previous dues were included, mark all older unadjusted orders as rolled into this new order
+        if (shouldIncludePrevDue) {
+            const custPastOrders = orders.filter(o => orderBelongsToCustomer(o, currentCustomer) && !isOrderAdjusted(o));
+            for (const pastOrder of custPastOrders) {
+                pastOrder.adjustedWithOrderId = newOrderId;
+                cloudUpsertOrder(pastOrder);
+            }
+        }
 
-    // If advance payment > 0, log it in payment history
-    if (advanceAmount > 0) {
-        const historyRecord = {
-            id: 'pay_' + Date.now(),
+        const affectedOrders = [];
+        if (advanceAmount > 0) {
+            affectedOrders.push(newOrderId);
+        }
+
+        const newOrder = {
+            id: newOrderId,
             customerId: currentCustomer.id,
-            customerName: currentCustomer.name,
-            amount: advanceAmount,
-            mode: advanceModeInput ? advanceModeInput.value : 'UPI',
-            date: new Date().toISOString(),
-            orderIds: [...new Set(affectedOrders)]
+            customerName: currentCustomer.name, // Snapshot name in case customer is later deleted
+            customerPhone: currentCustomer.phone || '',
+            customerAddress: currentCustomer.address || '',
+            items: [...cart],
+            itemsTotal: itemsTotal,
+            previousDue: previousDue,
+            additionalCost: additionalCost,
+            additionalCostReason: additionalCostReason,
+            totalAmount: grandTotal,
+            paidAmount: advanceAmount,
+            date: new Date().toISOString()
         };
-        paymentHistory.push(historyRecord);
-        localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
-        // Sync payment history to cloud
-        cloudInsertPayment(historyRecord);
+
+        // Save to orders & localStorage
+        orders.push(newOrder);
+        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
+        // Sync new order to cloud
+        cloudUpsertOrder(newOrder);
+
+        // If advance payment > 0, log it in payment history
+        if (advanceAmount > 0) {
+            const historyRecord = {
+                id: 'pay_' + Date.now(),
+                customerId: currentCustomer.id,
+                customerName: currentCustomer.name,
+                amount: advanceAmount,
+                mode: advanceModeInput ? advanceModeInput.value : 'UPI',
+                date: new Date().toISOString(),
+                orderIds: [...new Set(affectedOrders)]
+            };
+            paymentHistory.push(historyRecord);
+            localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
+            // Sync payment history to cloud
+            cloudInsertPayment(historyRecord);
+        }
+
+        // Build shareable bill HTML
+        const invoiceNum = 'TE-' + nextInvoiceNum;
+        const billElement = buildBillHTML(currentCustomer.name, currentCustomer.address, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason, invoiceNum);
+
+        // Reset inputs
+        if (additionalCostAmountInput) additionalCostAmountInput.value = '';
+        if (additionalCostReasonInput) additionalCostReasonInput.value = '';
+
+        // Share or copy as image
+        await shareAsImage(billElement, `Bill for ${currentCustomer.name}`);
+
+        // Reset UI
+        cart = [];
+        currentCustomer = null;
+
+        const custSelect = document.getElementById('customerSelect');
+        if (custSelect) custSelect.value = '';
+
+        const customerSearch = document.getElementById('customerSearch');
+        if (customerSearch) customerSearch.value = '';
+
+        updateOrderStepUI();
+        renderCart();
+        renderBills();
+        renderCustomersList();
+        renderHomeDashboard();
+
+        closeModal('confirmOrderModal');
+    } catch (err) {
+        console.error('Error finalizing order:', err);
+        showToast('Error saving order: ' + (err.message || err), 'error');
+    } finally {
+        if (btn) {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
     }
-
-    // Build shareable bill HTML
-    const invoiceNum = 'TE-' + nextInvoiceNum;
-    const billElement = buildBillHTML(currentCustomer.name, currentCustomer.address, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason, invoiceNum);
-
-    // Reset inputs
-    if (additionalCostAmountInput) additionalCostAmountInput.value = '';
-    if (additionalCostReasonInput) additionalCostReasonInput.value = '';
-
-    // Share or copy as image
-    await shareAsImage(billElement, `Bill for ${currentCustomer.name}`);
-
-    // Reset UI
-    cart = [];
-    currentCustomer = null;
-
-    const custSelect = document.getElementById('customerSelect');
-    if (custSelect) custSelect.value = '';
-
-    const customerSearch = document.getElementById('customerSearch');
-    if (customerSearch) customerSearch.value = '';
-
-    updateOrderStepUI();
-    renderCart();
-    renderBills();
-    renderCustomersList();
-    renderHomeDashboard();
-
-    closeModal('confirmOrderModal');
-    btn.innerHTML = originalText;
-    btn.disabled = false;
 }
 
 // --- Edit Bill Logic ---
@@ -1925,128 +1938,136 @@ async function finalizeBillEdits() {
     if (!editingOrderId) return;
 
     const btn = document.getElementById('saveAndShareBtn');
-    const originalText = btn.innerHTML;
-    btn.innerHTML = '⏳ Saving...';
-    btn.disabled = true;
+    const originalText = btn ? btn.innerHTML : '✨ Save Changes & Share';
+    if (btn) {
+        btn.innerHTML = '⏳ Saving...';
+        btn.disabled = true;
+    }
 
-    // Small delay for interactive feel
-    await new Promise(r => setTimeout(r, 400));
+    try {
+        // Small delay for interactive feel
+        await new Promise(r => setTimeout(r, 400));
 
-    const order = orders.find(o => o.id === editingOrderId);
-    if (!order) {
+        const order = orders.find(o => o.id === editingOrderId);
+        if (!order) {
+            closeModal('confirmOrderModal');
+            showToast('Error: Bill not found.', 'error');
+            return;
+        }
+
+        const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        const additionalCostAmountInput = document.getElementById('additionalCostAmount');
+        const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+        const additionalCostReasonInput = document.getElementById('additionalCostReason');
+        const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
+
+        let rawNewGrandTotal = itemsTotal + (order.previousDue || 0) + additionalCost;
+        let newGrandTotal = rawNewGrandTotal;
+        if (rawNewGrandTotal % 1 !== 0) {
+            newGrandTotal = Math.round(rawNewGrandTotal);
+        }
+        const difference = newGrandTotal - getOrderTotal(order);
+
+        // Update order values
+        order.items = [...cart];
+        order.itemsTotal = itemsTotal;
+        order.additionalCost = additionalCost;
+        order.additionalCostReason = additionalCostReason;
+        order.totalAmount = newGrandTotal;
+
+        if (order.adjustedWithOrderId) {
+            // If adjusted, paidAmount must match totalAmount
+            order.paidAmount = newGrandTotal;
+        }
+
+        // Propagate changes if there is a difference
+        if (difference !== 0) {
+            await propagateOrderTotalChange(editingOrderId, difference);
+        }
+
+        // Save orders & localStorage
+        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
+
+        // Sync updated main order to cloud
+        await cloudUpsertOrder(order);
+
+        // Build shareable bill HTML
+        const invoiceNum = getInvoiceNumber(order);
+        const billElement = buildBillHTML(
+            currentCustomer.name,
+            currentCustomer.address,
+            cart,
+            newGrandTotal,
+            order.previousDue || 0,
+            order.paidAmount || 0,
+            additionalCost,
+            additionalCostReason,
+            invoiceNum
+        );
+
+        // Reset inputs
+        if (additionalCostAmountInput) additionalCostAmountInput.value = '';
+        if (additionalCostReasonInput) additionalCostReasonInput.value = '';
+
+        // Share or copy as image
+        await shareAsImage(billElement, `Updated Bill for ${currentCustomer.name}`);
+
+        // Reset editing state
+        editingOrderId = null;
+        cart = [];
+        currentCustomer = null;
+
+        const custSelect = document.getElementById('customerSelect');
+        if (custSelect) custSelect.value = '';
+
+        const customerSearch = document.getElementById('customerSearch');
+        if (customerSearch) customerSearch.value = '';
+
+        // Hide banner
+        const banner = document.getElementById('editBillBanner');
+        if (banner) banner.style.display = 'none';
+
+        // Reset place order button
+        const placeOrderBtn = document.getElementById('placeOrderBtn');
+        if (placeOrderBtn) placeOrderBtn.innerHTML = 'Place Order →';
+
+        // Show advance payment inputs in confirmation modal again for future new orders
+        const paymentRecSection = document.querySelector('#confirmOrderModal div[style*="background: rgba(0, 112, 243, 0.05)"]');
+        if (paymentRecSection) {
+            paymentRecSection.style.display = 'block';
+        }
+
+        const prevDueToggle = document.getElementById('includePreviousDueContainer');
+        if (prevDueToggle) prevDueToggle.style.display = 'block';
+
+        // Reset save button onclick and text
+        const saveBtn = document.getElementById('saveAndShareBtn');
+        if (saveBtn) {
+            saveBtn.innerHTML = '✨ Save & Share Bill';
+            saveBtn.setAttribute('onclick', 'finalizeOrderAndShare()');
+        }
+
+        updateOrderStepUI();
+        renderCart();
+        renderBills();
+        renderCustomersList();
+        renderHomeDashboard();
+
         closeModal('confirmOrderModal');
-        btn.innerHTML = originalText;
-        btn.disabled = false;
-        showToast('Error: Bill not found.', 'error');
-        return;
+
+        // Switch view back to bills view
+        switchView('billsView');
+
+        showToast('Bill updated successfully!', 'success');
+    } catch (err) {
+        console.error('Error saving bill edits:', err);
+        showToast('Error updating bill: ' + (err.message || err), 'error');
+    } finally {
+        if (btn) {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
     }
-
-    const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const additionalCostAmountInput = document.getElementById('additionalCostAmount');
-    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
-    const additionalCostReasonInput = document.getElementById('additionalCostReason');
-    const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
-
-    let rawNewGrandTotal = itemsTotal + (order.previousDue || 0) + additionalCost;
-    let newGrandTotal = rawNewGrandTotal;
-    if (rawNewGrandTotal % 1 !== 0) {
-        newGrandTotal = Math.round(rawNewGrandTotal);
-    }
-    const difference = newGrandTotal - getOrderTotal(order);
-
-    // Update order values
-    order.items = [...cart];
-    order.itemsTotal = itemsTotal;
-    order.additionalCost = additionalCost;
-    order.additionalCostReason = additionalCostReason;
-    order.totalAmount = newGrandTotal;
-
-    if (order.adjustedWithOrderId) {
-        // If adjusted, paidAmount must match totalAmount
-        order.paidAmount = newGrandTotal;
-    }
-
-    // Propagate changes if there is a difference
-    if (difference !== 0) {
-        await propagateOrderTotalChange(editingOrderId, difference);
-    }
-
-    // Save orders & localStorage
-    localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
-
-    // Sync updated main order to cloud
-    await cloudUpsertOrder(order);
-
-    // Build shareable bill HTML
-    const invoiceNum = getInvoiceNumber(order);
-    const billElement = buildBillHTML(
-        currentCustomer.name,
-        currentCustomer.address,
-        cart,
-        newGrandTotal,
-        order.previousDue || 0,
-        order.paidAmount || 0,
-        additionalCost,
-        additionalCostReason,
-        invoiceNum
-    );
-
-    // Reset inputs
-    if (additionalCostAmountInput) additionalCostAmountInput.value = '';
-    if (additionalCostReasonInput) additionalCostReasonInput.value = '';
-
-    // Share or copy as image
-    await shareAsImage(billElement, `Updated Bill for ${currentCustomer.name}`);
-
-    // Reset editing state
-    editingOrderId = null;
-    cart = [];
-    currentCustomer = null;
-
-    const custSelect = document.getElementById('customerSelect');
-    if (custSelect) custSelect.value = '';
-
-    const customerSearch = document.getElementById('customerSearch');
-    if (customerSearch) customerSearch.value = '';
-
-    // Hide banner
-    const banner = document.getElementById('editBillBanner');
-    if (banner) banner.style.display = 'none';
-
-    // Reset place order button
-    const placeOrderBtn = document.getElementById('placeOrderBtn');
-    if (placeOrderBtn) placeOrderBtn.innerHTML = 'Place Order →';
-
-    // Show advance payment inputs in confirmation modal again for future new orders
-    const paymentRecSection = document.querySelector('#confirmOrderModal div[style*="background: rgba(0, 112, 243, 0.05)"]');
-    if (paymentRecSection) {
-        paymentRecSection.style.display = 'block';
-    }
-
-    const prevDueToggle = document.getElementById('includePreviousDueContainer');
-    if (prevDueToggle) prevDueToggle.style.display = 'block';
-
-    // Reset save button onclick and text
-    const saveBtn = document.getElementById('saveAndShareBtn');
-    if (saveBtn) {
-        saveBtn.innerHTML = '✨ Save & Share Bill';
-        saveBtn.setAttribute('onclick', 'finalizeOrderAndShare()');
-    }
-
-    updateOrderStepUI();
-    renderCart();
-    renderBills();
-    renderCustomersList();
-    renderHomeDashboard();
-
-    closeModal('confirmOrderModal');
-    btn.innerHTML = originalText;
-    btn.disabled = false;
-
-    // Switch view back to bills view
-    switchView('billsView');
-
-    showToast('Bill updated successfully!', 'success');
 }
 
 // --- Utility: Build bill HTML ---
