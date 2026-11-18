@@ -1,31 +1,29 @@
-// --- Authentication Check ---
-// if (localStorage.getItem('taruchhaya_loggedIn') !== 'true') {
-//     window.location.href = 'login.html';
-// }
-
-// --- State ---
-let customers = JSON.parse(localStorage.getItem('taruchhaya_customers')) || [];
-let products = JSON.parse(localStorage.getItem('taruchhaya_products')) || [];
-
-// Remove mock data if it exists in local storage
-customers = customers.filter(c => c.id !== 'cust_1' && c.id !== 'cust_2');
-products = products.filter(p => p.id !== 'prod_1' && p.id !== 'prod_2' && p.id !== 'prod_3');
-localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
-localStorage.setItem('taruchhaya_products', JSON.stringify(products));
-
-let orders = JSON.parse(localStorage.getItem('taruchhaya_orders')) || [];
-let paymentHistory = JSON.parse(localStorage.getItem('taruchhaya_payments')) || [];
+let customers = [];
+let products = [];
+let orders = [];
+let paymentHistory = [];
+let cloudRevision = null;
+let cloudLoad = null;
+let cloudWrite = false;
+let cloudRefreshQueued = false;
+let signedIn = false;
+let pendingSaveKey;
 
 let currentCustomer = null;
 let cart = []; // Array of { productId, quantity, price, name }
 let editingCustomerId = null;
 let editingProductId = null;
 let editingOrderId = null;
+let editingOrderSnapshot;
+let orderReviewRevision;
+let paymentReviewRevision;
+let billsCustomerId = null;
 let currentBillsFilter = 'all'; // 'all' | 'unpaid' | 'paid'
 
 function getInvoiceNumber(order) {
     if (!order || !order.id) return '';
     const parts = order.id.split('_');
+    if (parts[1] === 'v2' && parts.length === 3) return 'TE-N-' + parts[2];
     if (parts.length >= 3) {
         return 'TE-' + parts[2];
     }
@@ -46,140 +44,110 @@ function getInvoiceNumber(order) {
 function getOrderTotal(order) {
     if (!order) return 0;
     const directTotal = parseFloat(order.totalAmount ?? order.total_amount);
-    if (!isNaN(directTotal) && directTotal > 0) {
-        return Math.round(directTotal * 100) / 100;
+    if (directTotal > 0 || (directTotal === 0 && String(order.id).startsWith('ord_v2_'))) {
+        return roundMoney(directTotal);
     }
     // Calculate from items + extra costs
     const itemsSum = (order.items || []).reduce((sum, item) => {
         const p = parseFloat(item.price) || 0;
         const q = parseFloat(item.quantity) || 0;
-        return sum + (p * q);
+        return sum + getLineTotal({ price: p, quantity: q });
     }, 0);
     const addCost = parseFloat(order.additionalCost ?? order.additional_cost ?? 0) || 0;
     const prevDue = parseFloat(order.previousDue ?? order.previous_due ?? 0) || 0;
     const computed = itemsSum + addCost + prevDue;
-    return Math.round(computed * 100) / 100;
+    return roundMoney(computed);
 }
 
 function getOrderPaid(order) {
     if (!order) return 0;
     const paid = parseFloat(order.paidAmount ?? order.paid_amount ?? 0);
-    return isNaN(paid) ? 0 : Math.round(paid * 100) / 100;
+    return Number.isFinite(paid) ? Math.max(0, roundMoney(paid)) : 0;
 }
 
 function getOrderDue(order) {
     if (!order) return 0;
     const total = getOrderTotal(order);
     const paid = getOrderPaid(order);
-    const due = Math.round((total - paid) * 100) / 100;
+    const due = roundMoney(total - paid);
     return due > 0.005 ? due : 0;
 }
 
-// Robust matcher tolerant of ID type (string vs number), phone, or customer name
 function orderBelongsToCustomer(order, customer) {
-    if (!order || !customer) return false;
-    // Match by ID
-    if (order.customerId && customer.id && String(order.customerId).trim() === String(customer.id).trim()) {
-        return true;
+    if (!order || !customer || !customer.id) return false;
+    if (order.customerId != null && String(order.customerId).trim()) {
+        return String(order.customerId).trim() === String(customer.id).trim();
     }
-    // Match by phone if both have non-empty phone
-    if (order.customerPhone && customer.phone) {
-        const p1 = String(order.customerPhone).replace(/\D/g, '');
-        const p2 = String(customer.phone).replace(/\D/g, '');
-        if (p1.length >= 7 && p1 === p2) return true;
-    }
-    // Match by customer name (case-insensitive, trimmed)
-    const orderName = (order.customerName || '').trim().toLowerCase();
-    const custName = (customer.name || '').trim().toLowerCase();
-    if (orderName && custName && orderName === custName) {
-        return true;
-    }
-    return false;
+
+    // Only legacy bills without an ID may fall back to a unique phone or name.
+    const phone = String(order.customerPhone || '').replace(/\D/g, '');
+    const name = (order.customerName || '').trim().toLowerCase();
+    const phoneMatches = phone.length >= 7
+        ? customers.filter(c => String(c.phone || '').replace(/\D/g, '') === phone)
+        : [];
+    const matches = phoneMatches.length || !name
+        ? phoneMatches
+        : customers.filter(c => c.name.trim().toLowerCase() === name);
+    return matches.length === 1 && String(matches[0].id) === String(customer.id);
 }
 
 function isOrderAdjusted(order) {
-    if (!order || !order.adjustedWithOrderId) return false;
-    return orders.some(o => o.id === order.adjustedWithOrderId);
+    return !!order?.adjustedWithOrderId && orders.some(o => o.id === order.adjustedWithOrderId);
+}
+
+function getPayableOrders(customer) {
+    if (!customer) return [];
+    return orders.filter(order => orderBelongsToCustomer(order, customer) &&
+        !isOrderAdjusted(order) && getOrderDue(order) > 0)
+        .sort((a, b) => new Date(a.date) - new Date(b.date));
+}
+
+function escapeHtml(value) {
+    const characters = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    return String(value ?? '').replace(/[&<>"']/g, character => characters[character]);
+}
+
+function htmlArgument(value) {
+    return escapeHtml(JSON.stringify(String(value)));
+}
+
+function roundMoney(amount) {
+    if (!Number.isFinite(amount)) return amount;
+    const [coefficient, exponent = '0'] = String(Math.abs(amount)).split('e');
+    return Math.sign(amount) * Math.round(Number(coefficient + 'e' + (Number(exponent) + 2))) / 100;
+}
+
+function getLineTotal(item) {
+    const price = Number(item.price);
+    const quantity = Number(item.quantity);
+    if (!Number.isFinite(price * quantity) || !price || !quantity) return 0;
+    const [priceDigits, priceScale] = decimalParts(price);
+    const [quantityDigits, quantityScale] = decimalParts(quantity);
+    const digits = priceDigits * quantityDigits;
+    const scale = priceScale + quantityScale - 2;
+    const cents = scale > 0
+        ? (digits + 10n ** BigInt(scale) / 2n) / 10n ** BigInt(scale)
+        : digits * 10n ** BigInt(-scale);
+    return Math.sign(price * quantity) * Number(cents) / 100;
+}
+
+function decimalParts(value) {
+    const [coefficient, exponent = '0'] = String(Math.abs(value)).split('e');
+    const [whole, fraction = ''] = coefficient.split('.');
+    return [BigInt(whole + fraction), fraction.length - Number(exponent)];
+}
+
+function getItemsTotal(items) {
+    return roundMoney(items.reduce((sum, item) => sum + getLineTotal(item), 0));
+}
+
+function getOrderRevenue(order) {
+    return roundMoney(getOrderTotal(order) - (Number(order.previousDue) || 0));
 }
 
 function getCustomerTotalDue(customer) {
-    if (!customer) return 0;
-    let totalDue = 0;
-    orders.forEach(order => {
-        if (orderBelongsToCustomer(order, customer) && !isOrderAdjusted(order)) {
-            totalDue += getOrderDue(order);
-        }
-    });
-    return Math.round(totalDue * 100) / 100;
+    return roundMoney(getPayableOrders(customer).reduce((sum, order) => sum + getOrderDue(order), 0));
 }
-
-// --- Data Healing Function: Rebuilds order rollover chains & prevents double-counted dues ---
-function healOrdersData() {
-    if (!orders || orders.length === 0) return;
-    let modified = false;
-
-    // 1. Ensure basic numerical validity of orders
-    orders.forEach(order => {
-        const safeTotal = getOrderTotal(order);
-        if (order.totalAmount !== safeTotal) {
-            order.totalAmount = safeTotal;
-            modified = true;
-        }
-        if (order.paidAmount > safeTotal && safeTotal > 0) {
-            order.paidAmount = safeTotal;
-            modified = true;
-        }
-        if (isNaN(order.paidAmount) || order.paidAmount < 0) {
-            order.paidAmount = 0;
-            modified = true;
-        }
-        // If adjustedWithOrderId points to a non-existent order, clear it
-        if (order.adjustedWithOrderId && !orders.some(o => o.id === order.adjustedWithOrderId)) {
-            order.adjustedWithOrderId = null;
-            modified = true;
-        }
-    });
-
-    // 2. Reconstruct rollover chains for past orders where previous dues were rolled into a newer bill
-    const customerBuckets = {};
-    orders.forEach(order => {
-        const key = order.customerId || (order.customerName || '').trim().toLowerCase() || 'unknown';
-        if (!customerBuckets[key]) customerBuckets[key] = [];
-        customerBuckets[key].push(order);
-    });
-
-    Object.values(customerBuckets).forEach(custOrders => {
-        // Sort oldest first
-        custOrders.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-        for (let i = 0; i < custOrders.length; i++) {
-            const currentOrder = custOrders[i];
-            const prevDueVal = parseFloat(currentOrder.previousDue || currentOrder.previous_due || 0);
-
-            // If currentOrder rolled over previous dues, all earlier unadjusted orders should point to this rollover order
-            if (prevDueVal > 0) {
-                for (let j = 0; j < i; j++) {
-                    const earlierOrder = custOrders[j];
-                    if (!earlierOrder.adjustedWithOrderId) {
-                        earlierOrder.adjustedWithOrderId = currentOrder.id;
-                        modified = true;
-                    }
-                }
-            }
-        }
-    });
-
-    if (modified) {
-        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
-        if (typeof cloudUpsertOrder === 'function') {
-            orders.forEach(o => cloudUpsertOrder(o));
-        }
-        console.log('Orders data successfully healed and synchronized.');
-    }
-}
-
-// Run healing once on script evaluation
-healOrdersData();
 
 // --- Supabase Cloud Sync Logic ---
 // You can enter your credentials here to hardcode them, 
@@ -190,13 +158,14 @@ const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 let supabaseClient = null;
 
 function initSupabase() {
+    if (supabaseClient) return true;
     const url = localStorage.getItem('taruchhaya_supabase_url') || SUPABASE_URL || '';
     const key = localStorage.getItem('taruchhaya_supabase_key') || SUPABASE_KEY || '';
 
     if (url && key) {
         try {
             if (window.supabase) {
-                supabaseClient = window.supabase.createClient(url, key);
+                supabaseClient = window.supabase.createClient(url, key, { auth: { storage: sessionStorage, storageKey: 'taruchhaya_auth' } });
                 return true;
             }
         } catch (e) {
@@ -242,381 +211,220 @@ function updateCloudStatus(status, errorMsg = '') {
     }
 }
 
-async function loadCloudData() {
-    if (!initSupabase()) {
-        updateCloudStatus('disconnected');
-        return;
+function loadCloudData() {
+    if (!signedIn) return;
+    if (cloudWrite || cloudLoad) {
+        cloudRefreshQueued = true;
+        return cloudLoad;
     }
+    cloudLoad = refreshCloudSnapshot().finally(() => {
+        cloudLoad = null;
+        flushCloudRefresh();
+    });
+    return cloudLoad;
+}
 
+function flushCloudRefresh() {
+    if (!cloudRefreshQueued) return;
+    cloudRefreshQueued = false;
+    loadCloudData();
+}
+
+async function refreshCloudSnapshot() {
     updateCloudStatus('syncing');
-
     try {
-        const [resCust, resProd, resOrd, resPay] = await Promise.all([
-            supabaseClient.from('customers').select('*'),
-            supabaseClient.from('products').select('*'),
-            supabaseClient.from('orders').select('*'),
-            supabaseClient.from('payments').select('*')
-        ]);
-
-        if (resCust.error) throw resCust.error;
-        if (resProd.error) throw resProd.error;
-        if (resOrd.error) throw resOrd.error;
-        if (resPay.error) throw resPay.error;
-
-        const dbCust = resCust.data || [];
-        const dbProd = resProd.data || [];
-        const dbOrd = resOrd.data || [];
-        const dbPay = resPay.data || [];
-
-        // Check if DB is completely empty but local has data => Auto-migrate local to cloud
-        const localCust = JSON.parse(localStorage.getItem('taruchhaya_customers')) || [];
-        const localProd = JSON.parse(localStorage.getItem('taruchhaya_products')) || [];
-        const localOrd = JSON.parse(localStorage.getItem('taruchhaya_orders')) || [];
-        const localPay = JSON.parse(localStorage.getItem('taruchhaya_payments')) || [];
-
-        if (dbCust.length === 0 && dbProd.length === 0 && dbOrd.length === 0 && dbPay.length === 0 &&
-            (localCust.length > 0 || localProd.length > 0 || localOrd.length > 0 || localPay.length > 0)) {
-
-            console.log('Database is empty. Migrating local data to Supabase...');
-
-            if (localCust.length > 0) {
-                const mapCust = localCust.map(c => ({ id: c.id, name: c.name, phone: c.phone || '', address: c.address || '', created_at: c.createdAt || new Date().toISOString() }));
-                const { error } = await supabaseClient.from('customers').insert(mapCust);
-                if (error) throw error;
-            }
-
-            if (localProd.length > 0) {
-                const mapProd = localProd.map(p => ({ id: p.id, name: p.name, price: p.price, unit: p.unit || 'pcs' }));
-                const { error } = await supabaseClient.from('products').insert(mapProd);
-                if (error) throw error;
-            }
-
-            if (localOrd.length > 0) {
-                const mapOrd = localOrd.map(o => ({
-                    id: o.id,
-                    customer_id: o.customerId,
-                    customer_name: o.customerName || '',
-                    items: o.items || [],
-                    items_total: o.itemsTotal || 0,
-                    previous_due: o.previousDue || 0,
-                    additional_cost: o.additionalCost || 0,
-                    additional_cost_reason: o.additionalCostReason || '',
-                    total_amount: o.totalAmount || 0,
-                    paid_amount: o.paidAmount || 0,
-                    date: o.date || new Date().toISOString(),
-                    adjusted_with_order_id: o.adjustedWithOrderId || null
-                }));
-                const { error } = await supabaseClient.from('orders').insert(mapOrd);
-                if (error) throw error;
-            }
-
-            if (localPay.length > 0) {
-                const mapPay = localPay.map(p => ({
-                    id: p.id,
-                    customer_id: p.customerId,
-                    customer_name: p.customerName || '',
-                    amount: p.amount || 0,
-                    mode: p.mode || 'Cash',
-                    date: p.date || new Date().toISOString()
-                }));
-                const { error } = await supabaseClient.from('payments').insert(mapPay);
-                if (error) throw error;
-            }
-
-            showToast('Local data migrated to Supabase cloud successfully!');
-            updateCloudStatus('connected');
-            return;
-        }
-
-        // If cloud database has data, merge safely rather than blindly wiping local data
-        if (dbCust.length > 0) {
-            customers = dbCust.map(r => ({
-                id: r.id,
-                name: r.name,
-                phone: r.phone || '',
-                address: r.address || '',
-                createdAt: r.created_at
-            }));
-        } else if (localCust.length > 0) {
-            customers = localCust;
-        }
-
-        if (dbProd.length > 0) {
-            products = dbProd.map(r => ({
-                id: r.id,
-                name: r.name,
-                price: parseFloat(r.price),
-                unit: r.unit || 'pcs'
-            }));
-        } else if (localProd.length > 0) {
-            products = localProd;
-        }
-
-        if (dbOrd.length > 0) {
-            orders = dbOrd.map(r => ({
-                id: r.id,
-                customerId: r.customer_id,
-                customerName: r.customer_name || '',
-                items: r.items || [],
-                itemsTotal: parseFloat(r.items_total || 0),
-                previousDue: parseFloat(r.previous_due || 0),
-                additionalCost: parseFloat(r.additional_cost || 0),
-                additionalCostReason: r.additional_cost_reason || '',
-                totalAmount: parseFloat(r.total_amount || 0),
-                paidAmount: parseFloat(r.paid_amount || 0),
-                date: r.date,
-                adjustedWithOrderId: r.adjusted_with_order_id || null
-            }));
-        } else if (localOrd.length > 0) {
-            orders = localOrd;
-        }
-
-        if (dbPay.length > 0) {
-            paymentHistory = dbPay.map(r => ({
-                id: r.id,
-                customerId: r.customer_id,
-                customerName: r.customer_name || '',
-                amount: parseFloat(r.amount || 0),
-                mode: r.mode || 'Cash',
-                date: r.date
-            }));
-        } else if (localPay.length > 0) {
-            paymentHistory = localPay;
-        }
-
-        // Heal orders data after cloud sync
-        healOrdersData();
-
-        // Cache back to local storage
-        localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
-        localStorage.setItem('taruchhaya_products', JSON.stringify(products));
-        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
-        localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
-
-        // Re-render UI while maintaining active selection if applicable
-        const activeCustVal = document.getElementById('customerSelect') ? document.getElementById('customerSelect').value : '';
-        const activeProdVal = document.getElementById('productSelect') ? document.getElementById('productSelect').value : '';
-        renderCustomerSelect(document.getElementById('customerSearch') ? document.getElementById('customerSearch').value : '');
-        renderProductSelect(document.getElementById('productSearch') ? document.getElementById('productSearch').value : '');
-        if (activeCustVal) {
-            const custSelect = document.getElementById('customerSelect');
-            if (custSelect && Array.from(custSelect.options).some(o => o.value === activeCustVal)) {
-                custSelect.value = activeCustVal;
-            }
-        }
-        if (activeProdVal) {
-            const prodSelect = document.getElementById('productSelect');
-            if (prodSelect && Array.from(prodSelect.options).some(o => o.value === activeProdVal)) {
-                prodSelect.value = activeProdVal;
-            }
-        }
-        if (typeof renderProductsList === 'function') renderProductsList();
-        renderBills();
-        renderCart();
-
-        if (typeof renderCustomersList === 'function') renderCustomersList();
-
-        const homeView = document.getElementById('homeView');
-        if (homeView && homeView.style.display !== 'none') {
-            renderHomeDashboard();
-        }
-
-        const historyView = document.getElementById('historyView');
-        if (historyView && historyView.style.display !== 'none') {
-            renderPaymentHistory();
-        }
-
-        updateCloudStatus('connected');
-
-        // --- Setup Realtime Subscriptions ---
-        if (!window.realtimeSubscribed) {
-            supabaseClient
-                .channel('schema-db-changes')
-                .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, payload => {
-                    handleRealtimeChange('customers', payload);
-                })
-                .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, payload => {
-                    handleRealtimeChange('products', payload);
-                })
-                .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, payload => {
-                    handleRealtimeChange('orders', payload);
-                })
-                .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, payload => {
-                    handleRealtimeChange('payments', payload);
-                })
-                .subscribe();
-            window.realtimeSubscribed = true;
-        }
-
-        // We use a toast only if this is a manual refresh, or initial load, but skip it to not annoy the user on background syncs
-        if (!window.initialLoadDone) {
-            showToast('Connected to Cloud');
-            window.initialLoadDone = true;
-        }
-    } catch (err) {
-        console.error('Failed to load Supabase cloud data:', err);
-        updateCloudStatus('error', err.message || 'Check connection/credentials');
-    }
-}
-
-// --- Realtime Change Handler ---
-let realtimeTimeout = null;
-function handleRealtimeChange(table, payload) {
-    // Debounce to prevent multiple rapid fetches
-    if (realtimeTimeout) clearTimeout(realtimeTimeout);
-    realtimeTimeout = setTimeout(() => {
-        loadCloudData();
-    }, 500);
-}
-
-async function cloudUpsertCustomer(customer) {
-    if (!supabaseClient) return;
-    try {
-        const { error } = await supabaseClient.from('customers').upsert({
-            id: customer.id,
-            name: customer.name,
-            phone: customer.phone || '',
-            address: customer.address || '',
-            created_at: customer.createdAt || new Date().toISOString()
-        });
+        const { data, error } = await supabaseClient.rpc('taruchhaya_changes', { since_revision: cloudRevision });
         if (error) throw error;
+        if (!signedIn) return;
+        cloudRevision = data.revision;
+        if (data.customers !== null) customers = data.customers.map(r => ({ id: r.id, name: r.name, phone: r.phone || '', address: r.address || '', createdAt: r.created_at }));
+        if (data.products !== null) products = data.products.map(r => ({ id: r.id, name: r.name, price: Number(r.price), unit: r.unit || 'pcs' }));
+        if (data.orders !== null) orders = data.orders.map(r => ({
+            id: r.id, customerId: r.customer_id, customerName: r.customer_name || '',
+            items: r.items || [], itemsTotal: Number(r.items_total || 0), previousDue: Number(r.previous_due || 0),
+            additionalCost: Number(r.additional_cost || 0), additionalCostReason: r.additional_cost_reason || '',
+            totalAmount: r.total_amount == null ? null : Number(r.total_amount), paidAmount: Number(r.paid_amount || 0),
+            date: r.date, customerAddress: r.customer_address, customerPhone: r.customer_phone, adjustedWithOrderId: r.adjusted_with_order_id || null
+        }));
+        if (data.payments !== null) paymentHistory = data.payments.map(r => ({
+            id: r.id, customerId: r.customer_id, customerName: r.customer_name || '', amount: Number(r.amount),
+            mode: r.mode || 'Cash', date: r.date, details: r.details
+        }));
+        renderCloudSnapshot();
         updateCloudStatus('connected');
     } catch (err) {
-        console.error('Cloud save failed for customer:', err);
-        updateCloudStatus('error', 'Failed to save customer to cloud: ' + err.message);
+        updateCloudStatus('error', err.message);
     }
 }
 
-async function cloudDeleteCustomer(customerId) {
-    if (!supabaseClient) return;
-    try {
-        const { error } = await supabaseClient.from('customers').delete().eq('id', customerId);
-        if (error) throw error;
-        updateCloudStatus('connected');
-    } catch (err) {
-        console.error('Cloud delete failed for customer:', err);
-        updateCloudStatus('error', 'Failed to delete customer from cloud: ' + err.message);
+function renderCloudSnapshot() {
+    // Re-render UI while maintaining active selection if applicable
+    const activeCustVal = document.getElementById('customerSelect') ? document.getElementById('customerSelect').value : '';
+    const activeProdVal = document.getElementById('productSelect') ? document.getElementById('productSelect').value : '';
+    renderCustomerSelect(document.getElementById('customerSearch') ? document.getElementById('customerSearch').value : '');
+    renderProductSelect(document.getElementById('productSearch') ? document.getElementById('productSearch').value : '');
+    if (activeCustVal) {
+        const custSelect = document.getElementById('customerSelect');
+        if (custSelect && Array.from(custSelect.options).some(o => o.value === activeCustVal)) {
+            custSelect.value = activeCustVal;
+        }
     }
-}
-
-async function cloudUpsertProduct(product) {
-    if (!supabaseClient) return;
-    try {
-        const { error } = await supabaseClient.from('products').upsert({
-            id: product.id,
-            name: product.name,
-            price: product.price,
-            unit: product.unit || 'pcs'
-        });
-        if (error) throw error;
-        updateCloudStatus('connected');
-    } catch (err) {
-        console.error('Cloud save failed for product:', err);
-        updateCloudStatus('error', 'Failed to save product to cloud: ' + err.message);
+    if (activeProdVal) {
+        const prodSelect = document.getElementById('productSelect');
+        if (prodSelect && Array.from(prodSelect.options).some(o => o.value === activeProdVal)) {
+            prodSelect.value = activeProdVal;
+        }
     }
-}
-
-async function cloudDeleteProduct(productId) {
-    if (!supabaseClient) return;
-    try {
-        const { error } = await supabaseClient.from('products').delete().eq('id', productId);
-        if (error) throw error;
-        updateCloudStatus('connected');
-    } catch (err) {
-        console.error('Cloud delete failed for product:', err);
-        updateCloudStatus('error', 'Failed to delete product from cloud: ' + err.message);
-    }
-}
-
-async function cloudUpsertOrder(order) {
-    if (!supabaseClient) return;
-    try {
-        const { error } = await supabaseClient.from('orders').upsert({
-            id: order.id,
-            customer_id: order.customerId,
-            customer_name: order.customerName || '',
-            items: order.items || [],
-            items_total: order.itemsTotal || 0,
-            previous_due: order.previousDue || 0,
-            additional_cost: order.additionalCost || 0,
-            additional_cost_reason: order.additionalCostReason || '',
-            total_amount: order.totalAmount || 0,
-            paid_amount: order.paidAmount || 0,
-            date: order.date || new Date().toISOString(),
-            adjusted_with_order_id: order.adjustedWithOrderId || null
-        });
-        if (error) throw error;
-        updateCloudStatus('connected');
-    } catch (err) {
-        console.error('Cloud save failed for order:', err);
-        updateCloudStatus('error', 'Failed to save order to cloud: ' + err.message);
-    }
-}
-
-async function cloudDeleteOrder(orderId) {
-    if (!supabaseClient) return;
-    try {
-        const { error } = await supabaseClient.from('orders').delete().eq('id', orderId);
-        if (error) throw error;
-        updateCloudStatus('connected');
-    } catch (err) {
-        console.error('Cloud delete failed for order:', err);
-        updateCloudStatus('error', 'Failed to delete order from cloud: ' + err.message);
-    }
-}
-
-async function cloudInsertPayment(payment) {
-    if (!supabaseClient) return;
-    try {
-        const { error } = await supabaseClient.from('payments').insert({
-            id: payment.id,
-            customer_id: payment.customerId,
-            customer_name: payment.customerName || '',
-            amount: payment.amount || 0,
-            mode: payment.mode || 'Cash',
-            date: payment.date || new Date().toISOString()
-        });
-        if (error) throw error;
-        updateCloudStatus('connected');
-    } catch (err) {
-        console.error('Cloud save failed for payment:', err);
-        updateCloudStatus('error', 'Failed to save payment to cloud: ' + err.message);
-    }
-}
-
-
-// --- Initialization ---
-document.addEventListener('DOMContentLoaded', () => {
-    // No mock data injection. Data is completely managed by the user locally.
-
-    renderCustomerSelect();
-    renderProductSelect();
     if (typeof renderProductsList === 'function') renderProductsList();
     renderBills();
-    renderCart(); // Ensure empty state is shown on load
+    renderCart();
 
-    // Set everyday's date in sidebar and mobile header
-    const today = new Date();
-    const formattedDate = today.toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
+    if (typeof renderCustomersList === 'function') renderCustomersList();
+
+    const homeView = document.getElementById('homeView');
+    if (homeView && homeView.style.display !== 'none') {
+        renderHomeDashboard();
+    }
+
+    const historyView = document.getElementById('historyView');
+    if (historyView && historyView.style.display !== 'none') {
+        renderPaymentHistory();
+    }
+}
+
+function orderCloudRow(order) {
+    return {
+        id: order.id, customer_id: order.customerId, customer_name: order.customerName || '',
+        customer_address: order.customerAddress ?? null, customer_phone: order.customerPhone ?? null,
+        items: order.items || [], items_total: order.itemsTotal || 0, previous_due: order.previousDue || 0,
+        additional_cost: order.additionalCost || 0, additional_cost_reason: order.additionalCostReason || '',
+        total_amount: order.totalAmount, paid_amount: order.paidAmount || 0, date: order.date,
+        adjusted_with_order_id: order.adjustedWithOrderId || null
+    };
+}
+
+function paymentCloudRow(payment) {
+    return {
+        id: payment.id, customer_id: payment.customerId, customer_name: payment.customerName || '',
+        amount: payment.amount, mode: payment.mode, date: payment.date, details: payment.details
+    };
+}
+
+async function resolvePendingSave() {
+    const id = sessionStorage.getItem(pendingSaveKey);
+    if (!id) return true;
+    const { data, error } = await supabaseClient.rpc('taruchhaya_save_status', { operation: id });
+    if (error) return false;
+    if (!data) return false;
+    sessionStorage.removeItem(pendingSaveKey);
+    showToast(data === 'saved' ? 'The previous save was confirmed. Check the refreshed records.' :
+        'The previous save did not go through. You can enter it again.');
+    return true;
+}
+
+async function saveCloudChanges(changes) {
+    if (navigator.onLine === false) {
+        showToast('You are offline. This change was not saved. Reconnect and try again.', 'error');
+        return false;
+    }
+    if (!signedIn || cloudRevision === null || cloudLoad || cloudWrite) {
+        showToast('Wait for the cloud connection and any current save before trying again.', 'error');
+        return false;
+    }
+    cloudWrite = true;
+    const operation = crypto.randomUUID();
+    try {
+        if (sessionStorage.getItem(pendingSaveKey)) {
+            const resolved = await resolvePendingSave();
+            if (!resolved) showToast('The previous save is still unconfirmed. Reconnect before trying again.', 'error');
+            await refreshCloudSnapshot();
+            return false;
+        }
+        sessionStorage.setItem(pendingSaveKey, operation);
+        const args = { operation, expected_revision: cloudRevision, changes };
+        updateCloudStatus('syncing');
+        const uncertain = result => result.error && (!result.error.code || result.status >= 500);
+        let result = await supabaseClient.rpc('taruchhaya_save', args);
+        if (uncertain(result)) result = await supabaseClient.rpc('taruchhaya_save', args);
+        if (result.error) {
+            if (uncertain(result)) {
+                showToast('Save could not be confirmed. Reconnect and check the records before re-entering it.', 'error');
+            } else {
+                sessionStorage.removeItem(pendingSaveKey);
+                showToast(result.error.message || 'The cloud rejected this save.', 'error');
+            }
+            await refreshCloudSnapshot();
+            return false;
+        }
+        sessionStorage.removeItem(pendingSaveKey);
+        // A confirmed write can be followed by a failed read. Keep the last visible data and
+        // its old revision so a subsequent save cannot overwrite the newer cloud snapshot.
+        await refreshCloudSnapshot();
+        return true;
+    } catch (err) {
+        updateCloudStatus('error', err.message);
+        showToast('Save could not be confirmed. Check the records after reconnecting.', 'error');
+        return false;
+    } finally {
+        cloudWrite = false;
+        flushCloudRefresh();
+    }
+}
+
+async function refreshOnReconnect() {
+    if (!signedIn || cloudWrite || cloudLoad) return;
+    if (sessionStorage.getItem(pendingSaveKey) && await resolvePendingSave()) {
+        await loadCloudData();
+        return;
+    }
+    await loadCloudData();
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+    if (!initSupabase()) {
+        document.getElementById('sessionStatus').textContent = 'Could not connect to sign-in. Reload to try again.';
+        return;
+    }
+    const { data, error } = await supabaseClient.auth.getUser();
+    if (error || !data.user) {
+        window.location.replace('login.html');
+        return;
+    }
+    signedIn = true;
+    pendingSaveKey = 'taruchhaya_pending_' + data.user.id;
+    supabaseClient.auth.onAuthStateChange(event => {
+        if (event === 'SIGNED_OUT') endSession();
+    });
+    window.addEventListener('online', refreshOnReconnect);
+    window.addEventListener('focus', refreshOnReconnect);
+    window.addEventListener('pagehide', () => document.body.classList.add('checking-session'));
+    window.addEventListener('pageshow', async event => {
+        if (!event.persisted) return;
+        const { data, error } = await supabaseClient.auth.getUser();
+        if (error || !data.user) {
+            endSession();
+            return;
+        }
+        document.body.classList.remove('checking-session');
+        refreshOnReconnect();
     });
 
-    const dateElem = document.getElementById('sidebarDate');
-    if (dateElem) dateElem.textContent = formattedDate;
-
-    const mobileDateElem = document.getElementById('mobileHeaderDate');
-    if (mobileDateElem) mobileDateElem.textContent = formattedDate;
-
+    const today = new Date().toLocaleDateString('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+    });
+    document.getElementById('sidebarDate').textContent = today;
+    document.getElementById('mobileHeaderDate').textContent = today;
+    document.getElementById('sessionStatus').hidden = true;
+    document.body.classList.remove('checking-session');
     switchView('homeView');
-
-    // Load cloud data asynchronously
-    loadCloudData();
+    await refreshOnReconnect();
+    supabaseClient.channel('taruchhaya-sync')
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'taruchhaya_revision' }, () => loadCloudData())
+        .subscribe();
 });
 
 // --- Modal Logic ---
+
 function openModal(modalId) {
     document.getElementById(modalId).style.display = 'flex';
 }
@@ -670,85 +478,46 @@ function editCustomer(id) {
     openModal('customerModal');
 }
 
-function saveCustomer(e) {
+async function saveCustomer(e) {
     e.preventDefault();
-    const nameInput = document.getElementById('newCustomerName');
-    const phoneInput = document.getElementById('newCustomerPhone');
-    const addressInput = document.getElementById('newCustomerAddress');
-
-    const name = nameInput.value.trim();
-    const phone = phoneInput.value.trim();
+    const name = document.getElementById('newCustomerName').value.trim();
+    const phone = document.getElementById('newCustomerPhone').value.trim();
+    const address = document.getElementById('newCustomerAddress').value.trim();
     if (!name || !phone) {
-        showToast('Customer Name and Phone Number are required.');
+        showToast('Customer name and phone number are required.', 'error');
         return;
     }
-
-    if (editingCustomerId) {
-        const customer = customers.find(c => c.id === editingCustomerId);
-        if (customer) {
-            customer.name = name;
-            customer.phone = phone;
-            customer.address = addressInput ? addressInput.value.trim() : '';
-            // Sync edited customer to cloud
-            cloudUpsertCustomer(customer);
-        }
-    } else {
-        const newCustomer = {
-            id: 'cust_' + Date.now(),
-            name: name,
-            phone: phone,
-            address: addressInput ? addressInput.value.trim() : '',
-            createdAt: new Date().toISOString()
-        };
-        customers.push(newCustomer);
-        // Sync new customer to cloud
-        cloudUpsertCustomer(newCustomer);
-        
-        // Auto-select in combobox
-        setTimeout(() => {
-            selectCustomerFromCombobox(newCustomer.id);
-        }, 50);
+    const existing = customers.find(c => c.id === editingCustomerId);
+    if (editingCustomerId && !existing) {
+        showToast('This customer is no longer available.', 'error');
+        return;
     }
-
-    localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
-
-    renderCustomerSelect();
-    if (typeof renderCustomersList === 'function') {
-        renderCustomersList();
-    }
+    const id = existing?.id || 'cust_' + crypto.randomUUID();
+    if (!await saveCloudChanges({ customer: { id, name, phone, address, created_at: existing?.createdAt || new Date().toISOString() } })) return;
     closeModal('customerModal');
-    showToast(editingCustomerId ? 'Customer updated successfully' : 'Customer added successfully', 'success');
+    if (!existing && customers.some(c => c.id === id)) selectCustomerFromCombobox(id);
+    showToast(existing ? 'Customer updated.' : 'Customer added.');
 }
 
-function deleteCustomer(id) {
+async function deleteCustomer(id) {
     const customer = customers.find(c => c.id === id);
     if (!customer) return;
-
-    showCustomConfirm(`Are you sure you want to delete ${customer.name}?`).then(confirmed => {
-        if (!confirmed) return;
-
-        customers = customers.filter(c => c.id !== id);
-        localStorage.setItem('taruchhaya_customers', JSON.stringify(customers));
-
-        // Sync delete to cloud
-        if (typeof cloudDeleteCustomer === 'function') {
-            cloudDeleteCustomer(id);
-        }
-
-        // If currently selected customer is deleted, reset selection
-        if (currentCustomer && currentCustomer.id === id) {
-            currentCustomer = null;
-            const searchInput = document.getElementById('customerSearch');
-            if (searchInput) searchInput.value = '';
-            cart = [];
-            if (typeof renderCart === 'function') renderCart();
-            if (typeof updateOrderStepUI === 'function') updateOrderStepUI();
-        }
-
-        if (typeof renderCustomerSelect === 'function') renderCustomerSelect();
-        if (typeof renderCustomersList === 'function') renderCustomersList();
-        showToast('Customer deleted successfully.', 'success');
-    });
+    const hasHistory = () => orders.some(o => orderBelongsToCustomer(o, customer)) ||
+        paymentHistory.some(p => String(p.customerId) === String(id));
+    if (hasHistory()) {
+        showToast('This customer has bills or payments. Keep the profile to preserve their records.', 'error');
+        return;
+    }
+    if (!await showCustomConfirm('Delete ' + customer.name + '?') || hasHistory()) return;
+    if (!await saveCloudChanges({ delete_customer: id })) return;
+    if (currentCustomer?.id === id) {
+        currentCustomer = null;
+        cart = [];
+        document.getElementById('customerSearch').value = '';
+        updateOrderStepUI();
+        renderCart();
+    }
+    showToast('Customer deleted.');
 }
 
 function renderCustomerSelect(filterTerm = '') {
@@ -859,69 +628,32 @@ function editProduct(id) {
     openModal('productModal');
 }
 
-function saveProduct(e) {
+async function saveProduct(e) {
     e.preventDefault();
-    const nameInput = document.getElementById('newProductName');
-    const priceInput = document.getElementById('newProductPrice');
-    const unitInput = document.getElementById('newProductUnit');
-
-    const name = nameInput.value.trim();
-    const price = parseFloat(priceInput.value);
-    const unit = unitInput ? unitInput.value : 'pcs';
-
-    if (!name || isNaN(price) || price < 0) {
-        showToast('Please enter a valid product name and price.');
+    const name = document.getElementById('newProductName').value.trim();
+    const price = parseFloat(document.getElementById('newProductPrice').value);
+    const unit = document.getElementById('newProductUnit').value || 'pcs';
+    if (!name || !Number.isFinite(price) || price < 0) {
+        showToast('Please enter a valid product name and price.', 'error');
         return;
     }
-
-    if (editingProductId) {
-        const product = products.find(p => p.id === editingProductId);
-        if (product) {
-            product.name = name;
-            product.price = price;
-            product.unit = unit;
-            // Sync edited product to cloud
-            cloudUpsertProduct(product);
-        }
-    } else {
-        const newProduct = {
-            id: 'prod_' + Date.now(),
-            name: name,
-            price: price,
-            unit: unit
-        };
-        products.push(newProduct);
-        // Sync new product to cloud
-        cloudUpsertProduct(newProduct);
+    if (editingProductId && !products.some(product => product.id === editingProductId)) {
+        showToast('This product is no longer available.', 'error');
+        return;
     }
-
-    localStorage.setItem('taruchhaya_products', JSON.stringify(products));
-
-    renderProductSelect();
-    if (typeof renderProductsList === 'function') {
-        renderProductsList();
-    }
-
+    const id = editingProductId || 'prod_' + crypto.randomUUID();
+    if (!await saveCloudChanges({ product: { id, name, price, unit } })) return;
     closeModal('productModal');
+    showToast('Product saved.');
 }
 
 async function deleteProduct(productId) {
-    // Don't allow deleting if product is in the current cart
     if (cart.some(item => item.productId === productId)) {
-        showToast('Cannot delete a product that is currently in the cart. Remove it from the cart first.');
+        showToast('Remove this product from the cart before deleting it.', 'error');
         return;
     }
-    if (!(await showCustomConfirm('Delete this product permanently?'))) return;
-
-    products = products.filter(p => p.id !== productId);
-    localStorage.setItem('taruchhaya_products', JSON.stringify(products));
-    // Sync delete to cloud
-    cloudDeleteProduct(productId);
-
-    renderProductSelect();
-    if (typeof renderProductsList === 'function') {
-        renderProductsList();
-    }
+    if (!await showCustomConfirm('Delete this product permanently?')) return;
+    if (await saveCloudChanges({ delete_product: productId })) showToast('Product deleted.');
 }
 
 function handleProductChange() {
@@ -1001,14 +733,14 @@ function renderProductsList() {
     }
 
     if (filtered.length === 0) {
-        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No products found matching "${searchInput.value.replace(/"/g, '&quot;')}".</p>`;
+        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No products found matching "${escapeHtml(searchInput.value)}".</p>`;
         return;
     }
 
     const sortedProducts = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
 
     sortedProducts.forEach(prod => {
-        const unitDisplay = prod.unit ? ` / ${prod.unit}` : '';
+        const unitDisplay = prod.unit ? ` / ${escapeHtml(prod.unit)}` : '';
 
         const card = document.createElement('div');
         card.className = 'bill-card';
@@ -1023,9 +755,9 @@ function renderProductsList() {
 
         card.innerHTML = `
             <div>
-                <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #1e293b;">${prod.name}</h3>
+                <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #1e293b;">${escapeHtml(prod.name)}</h3>
                 <div style="margin-top: 4px; display: flex; flex-direction: column; gap: 2px;">
-                    <span style="font-size: 0.9rem; color: #64748b;">Unit: ${prod.unit || 'pcs'}</span>
+                    <span style="font-size: 0.9rem; color: #64748b;">Unit: ${escapeHtml(prod.unit || 'pcs')}</span>
                 </div>
             </div>
             
@@ -1035,9 +767,9 @@ function renderProductsList() {
                 </span>
                 
                 <div style="display: flex; gap: 12px; align-items: center;">
-                    <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 0.9rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px; display: flex; align-items: center; gap: 4px;" onclick="editProduct('${prod.id}')">✏️ Edit</button>
+                    <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 0.9rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px; display: flex; align-items: center; gap: 4px;" onclick="editProduct(${htmlArgument(prod.id)})">✏️ Edit</button>
                     
-                    <button class="btn-danger" style="padding: 4px 8px; font-size: 0.9rem; border: none; background: transparent; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--danger-color);" onclick="deleteProduct('${prod.id}')">🗑️ Delete</button>
+                    <button class="btn-danger" style="padding: 4px 8px; font-size: 0.9rem; border: none; background: transparent; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--danger-color);" onclick="deleteProduct(${htmlArgument(prod.id)})">🗑️ Delete</button>
                 </div>
             </div>
         `;
@@ -1046,70 +778,6 @@ function renderProductsList() {
 }
 
 // --- Cart & Order Logic ---
-function addProductToCart() {
-    if (!currentCustomer) {
-        showToast('Please select a customer first.');
-        return;
-    }
-
-    const select = document.getElementById('productSelect');
-    const qtyInput = document.getElementById('productQuantity');
-    const priceOverrideInput = document.getElementById('productPriceOverride');
-
-    if (!select.value) {
-        showToast('Please select a product.');
-        return;
-    }
-
-    const productId = select.value;
-    const quantity = parseInt(qtyInput.value, 10);
-
-    if (isNaN(quantity) || quantity <= 0) {
-        showToast('Please enter a valid quantity (must be 1 or more).');
-        return;
-    }
-
-    const product = products.find(p => p.id === productId);
-    if (!product) {
-        showToast('Selected product not found. Please refresh and try again.');
-        return;
-    }
-
-    // Determine the price to use
-    let price = product.price;
-    if (priceOverrideInput && priceOverrideInput.value !== '') {
-        const overridePrice = parseFloat(priceOverrideInput.value);
-        if (!isNaN(overridePrice) && overridePrice >= 0) {
-            price = overridePrice;
-        }
-    }
-
-    // If already in cart, increase quantity and update price
-    const existingItem = cart.find(item => item.productId === productId);
-
-    if (existingItem) {
-        existingItem.quantity += quantity;
-        if (priceOverrideInput && priceOverrideInput.value !== '') {
-            existingItem.price = price;
-        }
-    } else {
-        cart.push({
-            productId: product.id,
-            name: product.name,
-            price: price,
-            quantity: quantity,
-            unit: product.unit || 'pcs'
-        });
-    }
-
-    // Reset inputs
-    select.value = '';
-    qtyInput.value = '1';
-    if (priceOverrideInput) priceOverrideInput.value = '';
-
-    renderCart();
-}
-
 function removeFromCart(productId) {
     cart = cart.filter(item => item.productId !== productId);
     renderCart();
@@ -1117,8 +785,9 @@ function removeFromCart(productId) {
 
 function updateCartQuantity(productId, newQty) {
     const qty = parseFloat(newQty);
-    if (isNaN(qty) || qty <= 0) {
-        removeFromCart(productId);
+    if (!Number.isFinite(qty) || qty <= 0) {
+        showToast('Enter a quantity greater than zero, or use Remove to delete the item.', 'error');
+        renderCart();
         return;
     }
     const item = cart.find(i => i.productId === productId);
@@ -1130,7 +799,7 @@ function updateCartQuantity(productId, newQty) {
 
 function updateCartPrice(productId, newPrice) {
     const price = parseFloat(newPrice);
-    if (isNaN(price) || price < 0) {
+    if (!Number.isFinite(price) || price < 0) {
         renderCart();
         return;
     }
@@ -1172,8 +841,8 @@ function onCustomerSearchInput(value) {
 
             item.innerHTML = `
                 <div>
-                    <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary);">${cust.name}</div>
-                    <div style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 4px;">📞 ${cust.phone || 'N/A'} ${cust.address ? '· 📍 ' + cust.address : ''}</div>
+                    <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary);">${escapeHtml(cust.name)}</div>
+                    <div style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 4px;">📞 ${escapeHtml(cust.phone || 'N/A')} ${escapeHtml(cust.address ? '· 📍 ' + cust.address : '')}</div>
                 </div>
                 ${totalDue > 0 ? `<span style="font-size: 0.85rem; font-weight: 700; color: var(--danger-color); background: rgba(239, 68, 68, 0.1); padding: 4px 10px; border-radius: 12px;">Due: ₹${totalDue.toFixed(2)}</span>` : '<span style="font-size: 0.85rem; font-weight: 600; color: var(--success-color); background: rgba(16, 185, 129, 0.1); padding: 4px 10px; border-radius: 12px;">No Dues</span>'}
             `;
@@ -1235,7 +904,6 @@ function addProductToCart(productId) {
 
     renderCart();
 }
-const quickAddProductToCart = addProductToCart;
 
 // --- Product Combobox Search ---
 function onProductSearchInput(value) {
@@ -1271,10 +939,10 @@ function onProductSearchInput(value) {
                 if (searchInput) searchInput.value = '';
             };
 
-            const unitDisplay = prod.unit ? ` / ${prod.unit}` : '';
+            const unitDisplay = prod.unit ? ` / ${escapeHtml(prod.unit)}` : '';
             item.innerHTML = `
                 <div>
-                    <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary);">${prod.name}</div>
+                    <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary);">${escapeHtml(prod.name)}</div>
                     <div style="font-size: 0.9rem; color: var(--accent-color); font-weight: 700; margin-top: 4px;">₹${prod.price.toFixed(2)}${unitDisplay}</div>
                 </div>
                 <button type="button" style="background: var(--accent-color); color: white; border: none; padding: 8px 16px; border-radius: 10px; font-weight: 700; font-size: 0.9rem; cursor: pointer; min-height: 40px; display: flex; align-items: center;">
@@ -1397,7 +1065,7 @@ function renderCart() {
     let grandTotal = 0;
 
     cart.forEach(item => {
-        const itemTotal = item.price * item.quantity;
+        const itemTotal = getLineTotal(item);
         grandTotal += itemTotal;
 
         const card = document.createElement('div');
@@ -1405,20 +1073,20 @@ function renderCart() {
         card.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; gap: 8px;">
                 <div style="flex: 1; min-width: 0;">
-                    <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary); line-height: 1.35; word-break: break-word;">${item.name}</div>
+                    <div style="font-weight: 700; font-size: 1.05rem; color: var(--text-primary); line-height: 1.35; word-break: break-word;">${escapeHtml(item.name)}</div>
                     <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
                         <span style="font-size: 0.88rem; font-weight: 600; color: var(--text-secondary);">Rate: ₹</span>
-                        <input type="number" value="${item.price.toFixed(2)}" step="0.01" min="0" onchange="updateCartPrice('${item.productId}', this.value)" style="width: 90px; padding: 5px 8px; border: 1.5px solid var(--panel-border); border-radius: 8px; font-size: 0.98rem; font-weight: 700; color: var(--accent-color); background: var(--input-bg); outline: none;">
-                        <span style="font-size: 0.85rem; color: var(--text-secondary);">/ ${item.unit || 'pcs'}</span>
+                        <input type="number" value="${item.price.toFixed(2)}" step="0.01" min="0" onchange="updateCartPrice(${htmlArgument(item.productId)}, this.value)" style="width: 90px; padding: 5px 8px; border: 1.5px solid var(--panel-border); border-radius: 8px; font-size: 0.98rem; font-weight: 700; color: var(--accent-color); background: var(--input-bg); outline: none;">
+                        <span style="font-size: 0.85rem; color: var(--text-secondary);">/ ${escapeHtml(item.unit || 'pcs')}</span>
                     </div>
                 </div>
-                <button onclick="removeFromCart('${item.productId}')" style="background: rgba(239,68,68,0.1); border: none; color: var(--danger-color); font-size: 1.15rem; width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;" title="Remove">✕</button>
+                <button onclick="removeFromCart(${htmlArgument(item.productId)})" style="background: rgba(239,68,68,0.1); border: none; color: var(--danger-color); font-size: 1.15rem; width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;" title="Remove">✕</button>
             </div>
             
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-top: 2px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,0.08);">
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <span style="font-size: 0.88rem; font-weight: 600; color: var(--text-secondary);">Qty:</span>
-                    <input type="number" value="${item.quantity}" min="0.01" step="any" onchange="updateCartQuantity('${item.productId}', this.value)" style="width: 80px; padding: 6px 10px; border: 1.5px solid var(--panel-border); border-radius: 8px; font-size: 1.05rem; font-weight: 700; color: var(--text-primary); background: var(--input-bg); outline: none; text-align: center;">
+                    <input type="number" value="${escapeHtml(item.quantity)}" min="0.01" step="any" onchange="updateCartQuantity(${htmlArgument(item.productId)}, this.value)" style="width: 80px; padding: 6px 10px; border: 1.5px solid var(--panel-border); border-radius: 8px; font-size: 1.05rem; font-weight: 700; color: var(--text-primary); background: var(--input-bg); outline: none; text-align: center;">
                 </div>
                 <div style="text-align: right;">
                     <span style="font-size: 0.78rem; color: var(--text-secondary); display: block; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Total</span>
@@ -1435,13 +1103,9 @@ function renderCart() {
     }
 
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
-    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+    const additionalCost = roundMoney(Number(additionalCostAmountInput?.value) || 0);
 
-    let rawFinalTotal = grandTotal + previousDue + additionalCost;
-    let finalTotal = rawFinalTotal;
-    if (rawFinalTotal % 1 !== 0) {
-        finalTotal = Math.round(rawFinalTotal);
-    }
+    const finalTotal = roundMoney(grandTotal + previousDue + additionalCost);
 
     if (cartBarTotal) cartBarTotal.textContent = `₹${finalTotal.toFixed(2)}`;
     if (cartBarItemCount) {
@@ -1467,6 +1131,7 @@ function renderCart() {
 
 // --- Place Order ---
 function placeOrder() {
+    orderReviewRevision = cloudRevision;
     if (!currentCustomer) {
         showToast('Please select a customer first.');
         return;
@@ -1476,10 +1141,10 @@ function placeOrder() {
         return;
     }
 
-    const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const itemsTotal = getItemsTotal(cart);
 
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
-    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+    const additionalCost = roundMoney(Number(additionalCostAmountInput?.value) || 0);
     const additionalCostReasonInput = document.getElementById('additionalCostReason');
     const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
 
@@ -1495,7 +1160,7 @@ function placeOrder() {
         let confirmText = `New Items Total: ₹${itemsTotal.toFixed(2)}`;
         if (additionalCost > 0) {
             const reasonDisplay = additionalCostReason ? additionalCostReason : 'Misc';
-            confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${reasonDisplay}: ₹${additionalCost.toFixed(2)}</span>`;
+            confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${escapeHtml(reasonDisplay)}: ₹${additionalCost.toFixed(2)}</span>`;
         }
 
         const originalPreviousDue = order.previousDue || 0;
@@ -1503,17 +1168,8 @@ function placeOrder() {
             confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Original Previous Due: ₹${originalPreviousDue.toFixed(2)}</span>`;
         }
 
-        let rawNewGrandTotal = itemsTotal + originalPreviousDue + additionalCost;
-        let newGrandTotal = rawNewGrandTotal;
-        let roundOff = 0;
-        if (rawNewGrandTotal % 1 !== 0) {
-            newGrandTotal = Math.round(rawNewGrandTotal);
-            roundOff = newGrandTotal - rawNewGrandTotal;
-        }
+        const newGrandTotal = roundMoney(itemsTotal + originalPreviousDue + additionalCost);
 
-        if (Math.abs(roundOff) > 0.001) {
-            confirmText += `<br><span style="font-size:1rem; color:#64748b;">Round Off: ₹${roundOff > 0 ? '+' : ''}${roundOff.toFixed(2)}</span>`;
-        }
 
         confirmText += `<br><br>New Grand Total: ₹${newGrandTotal.toFixed(2)}`;
 
@@ -1562,27 +1218,18 @@ function placeOrder() {
 
     const previousDue = shouldIncludePrevDue ? customerPendingDue : 0;
 
-    let rawGrandTotal = itemsTotal + previousDue + additionalCost;
-    let grandTotal = rawGrandTotal;
-    let roundOff = 0;
-    if (rawGrandTotal % 1 !== 0) {
-        grandTotal = Math.round(rawGrandTotal);
-        roundOff = grandTotal - rawGrandTotal;
-    }
+    const grandTotal = roundMoney(itemsTotal + previousDue + additionalCost);
 
     document.getElementById('confirmCustomerName').textContent = `Customer: ${currentCustomer.name}`;
     let confirmText = `Items Total: ₹${itemsTotal.toFixed(2)}`;
     if (additionalCost > 0) {
         const reasonDisplay = additionalCostReason ? additionalCostReason : 'Misc';
-        confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${reasonDisplay}: ₹${additionalCost.toFixed(2)}</span>`;
+        confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${escapeHtml(reasonDisplay)}: ₹${additionalCost.toFixed(2)}</span>`;
     }
     if (previousDue > 0) {
         confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Previous Due: ₹${previousDue.toFixed(2)}</span>`;
     } else if (customerPendingDue > 0 && !shouldIncludePrevDue) {
         confirmText += `<br><span style="font-size:0.9rem; color:#64748b;">(Pending Dues of ₹${customerPendingDue.toFixed(2)} not added to this bill)</span>`;
-    }
-    if (Math.abs(roundOff) > 0.001) {
-        confirmText += `<br><span style="font-size:1rem; color:#64748b;">Round Off: ₹${roundOff > 0 ? '+' : ''}${roundOff.toFixed(2)}</span>`;
     }
     confirmText += `<br><br>Grand Total: ₹${grandTotal.toFixed(2)}`;
     document.getElementById('confirmGrandTotal').innerHTML = confirmText;
@@ -1592,6 +1239,8 @@ function placeOrder() {
     if (advanceInput) {
         advanceInput.value = '';
         document.getElementById('advancePaymentMode').value = 'UPI';
+        document.getElementById('advancePaymentDate').value = '';
+        document.getElementById('advancePaymentReference').value = '';
     }
     document.getElementById('confirmGrandTotal').dataset.originalHtml = confirmText;
     document.getElementById('confirmGrandTotal').dataset.grandTotal = grandTotal;
@@ -1601,35 +1250,26 @@ function placeOrder() {
 
 function toggleConfirmPrevDue(isChecked) {
     if (!currentCustomer) return;
-    const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const itemsTotal = getItemsTotal(cart);
     const additionalCostAmountInput = document.getElementById('additionalCostAmount');
-    const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+    const additionalCost = roundMoney(Number(additionalCostAmountInput?.value) || 0);
     const additionalCostReasonInput = document.getElementById('additionalCostReason');
     const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
 
     const customerPendingDue = getCustomerTotalDue(currentCustomer);
     const previousDue = isChecked ? customerPendingDue : 0;
 
-    let rawGrandTotal = itemsTotal + previousDue + additionalCost;
-    let grandTotal = rawGrandTotal;
-    let roundOff = 0;
-    if (rawGrandTotal % 1 !== 0) {
-        grandTotal = Math.round(rawGrandTotal);
-        roundOff = grandTotal - rawGrandTotal;
-    }
+    const grandTotal = roundMoney(itemsTotal + previousDue + additionalCost);
 
     let confirmText = `Items Total: ₹${itemsTotal.toFixed(2)}`;
     if (additionalCost > 0) {
         const reasonDisplay = additionalCostReason ? additionalCostReason : 'Misc';
-        confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${reasonDisplay}: ₹${additionalCost.toFixed(2)}</span>`;
+        confirmText += `<br><span style="font-size:1rem; color:#64748b;">+ ${escapeHtml(reasonDisplay)}: ₹${additionalCost.toFixed(2)}</span>`;
     }
     if (previousDue > 0) {
         confirmText += `<br><span style="font-size:1rem; color:var(--danger-color);">+ Previous Due: ₹${previousDue.toFixed(2)}</span>`;
     } else if (customerPendingDue > 0) {
         confirmText += `<br><span style="font-size:0.9rem; color:#64748b;">(Pending Dues of ₹${customerPendingDue.toFixed(2)} not added to this bill)</span>`;
-    }
-    if (Math.abs(roundOff) > 0.001) {
-        confirmText += `<br><span style="font-size:1rem; color:#64748b;">Round Off: ₹${roundOff > 0 ? '+' : ''}${roundOff.toFixed(2)}</span>`;
     }
     confirmText += `<br><br>Grand Total: ₹${grandTotal.toFixed(2)}`;
 
@@ -1671,42 +1311,31 @@ async function finalizeOrderAndShare() {
     }
 
     try {
-        // Small delay for interactive feel
-        await new Promise(r => setTimeout(r, 400));
-
-        const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-
-        // Calculate the next invoice number
-        let nextInvoiceNum = 1001;
-        if (orders.length > 0) {
-            const numbers = orders.map(o => {
-                const parts = o.id.split('_');
-                return parts.length >= 3 ? parseInt(parts[2], 10) : 0;
-            }).filter(num => !isNaN(num) && num > 0);
-            if (numbers.length > 0) {
-                nextInvoiceNum = Math.max(...numbers) + 1;
-            }
+        const customer = customers.find(c => c.id === currentCustomer.id);
+        if (!customer || orderReviewRevision !== cloudRevision) {
+            showToast('Cloud records changed. Review the order again before issuing the invoice.', 'error');
+            return;
         }
-        const newOrderId = 'ord_' + Date.now() + '_' + nextInvoiceNum;
+        currentCustomer = customer;
+        const items = cart.map(item => ({ ...item }));
+        const itemsTotal = getItemsTotal(items);
+
+
 
         // Check if user chose to include previous dues on this printed bill
         const includePrevDueCheckbox = document.getElementById('includePreviousDueCheckbox');
         const shouldIncludePrevDue = includePrevDueCheckbox ? includePrevDueCheckbox.checked : false;
 
         // Customer existing pending dues across all previous orders
-        const existingDues = getCustomerTotalDue(currentCustomer);
+        const existingDues = getCustomerTotalDue(customer);
         const previousDue = shouldIncludePrevDue ? existingDues : 0;
 
         const additionalCostAmountInput = document.getElementById('additionalCostAmount');
-        const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+        const additionalCost = roundMoney(Number(additionalCostAmountInput?.value) || 0);
         const additionalCostReasonInput = document.getElementById('additionalCostReason');
         const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
 
-        let rawGrandTotal = itemsTotal + previousDue + additionalCost;
-        let grandTotal = rawGrandTotal;
-        if (rawGrandTotal % 1 !== 0) {
-            grandTotal = Math.round(rawGrandTotal);
-        }
+        const grandTotal = roundMoney(itemsTotal + previousDue + additionalCost);
 
         const advancePaymentInput = document.getElementById('advancePaymentAmount');
         const advanceModeInput = document.getElementById('advancePaymentMode');
@@ -1716,33 +1345,41 @@ async function finalizeOrderAndShare() {
             if (isNaN(advanceAmount) || advanceAmount < 0) advanceAmount = 0;
         }
 
-        if (advanceAmount > grandTotal && grandTotal > 0) {
-            showToast('Payment received cannot be greater than the grand total.');
+        if (advanceAmount > roundMoney(grandTotal)) {
+            showToast('Payment received cannot be greater than the grand total.', 'error');
             return;
         }
 
-        // Allocate payment:
-        // If previous dues were included, mark all older unadjusted orders as rolled into this new order
-        if (shouldIncludePrevDue) {
-            const custPastOrders = orders.filter(o => orderBelongsToCustomer(o, currentCustomer) && !isOrderAdjusted(o));
-            for (const pastOrder of custPastOrders) {
-                pastOrder.adjustedWithOrderId = newOrderId;
-                cloudUpsertOrder(pastOrder);
-            }
+        const advanceDate = readPaymentDate('advancePaymentDate');
+        const advanceReference = document.getElementById('advancePaymentReference').value.trim();
+        const advanceMode = advanceModeInput ? advanceModeInput.value : 'UPI';
+        if (advanceAmount && (!advanceDate || hasPaymentReference(customer.id, advanceMode, advanceReference))) {
+            showToast('Check the payment date and make sure the reference has not already been recorded.', 'error');
+            return;
         }
 
-        const affectedOrders = [];
-        if (advanceAmount > 0) {
-            affectedOrders.push(newOrderId);
+        if (!signedIn || cloudRevision === null || cloudLoad || cloudWrite) {
+            showToast('Wait for the cloud connection before issuing an invoice.', 'error');
+            return;
         }
+        const draftRevision = cloudRevision;
+        const { data: invoiceNumber, error } = await supabaseClient.rpc('taruchhaya_invoice_number');
+        if (error) throw error;
+        if (draftRevision !== cloudRevision) {
+            showToast('Records changed while you were preparing this bill. Review the amount and try again.', 'error');
+            return;
+        }
+        const newOrderId = 'ord_v2_' + invoiceNumber;
+        const carriedOrders = shouldIncludePrevDue ? getPayableOrders(customer)
+            .map(order => ({ ...order, adjustedWithOrderId: newOrderId })) : [];
 
         const newOrder = {
             id: newOrderId,
-            customerId: currentCustomer.id,
-            customerName: currentCustomer.name, // Snapshot name in case customer is later deleted
-            customerPhone: currentCustomer.phone || '',
-            customerAddress: currentCustomer.address || '',
-            items: [...cart],
+            customerId: customer.id,
+            customerName: customer.name,
+            customerPhone: customer.phone || '',
+            customerAddress: customer.address || '',
+            items,
             itemsTotal: itemsTotal,
             previousDue: previousDue,
             additionalCost: additionalCost,
@@ -1752,39 +1389,23 @@ async function finalizeOrderAndShare() {
             date: new Date().toISOString()
         };
 
-        // Save to orders & localStorage
-        orders.push(newOrder);
-        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
-        // Sync new order to cloud
-        cloudUpsertOrder(newOrder);
-
-        // If advance payment > 0, log it in payment history
-        if (advanceAmount > 0) {
-            const historyRecord = {
-                id: 'pay_' + Date.now(),
-                customerId: currentCustomer.id,
-                customerName: currentCustomer.name,
-                amount: advanceAmount,
-                mode: advanceModeInput ? advanceModeInput.value : 'UPI',
-                date: new Date().toISOString(),
-                orderIds: [...new Set(affectedOrders)]
-            };
-            paymentHistory.push(historyRecord);
-            localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
-            // Sync payment history to cloud
-            cloudInsertPayment(historyRecord);
-        }
+        const payment = advanceAmount > 0 ? makePaymentRecord(customer, advanceAmount, advanceMode, advanceDate, {
+            kind: 'receipt', reference: advanceReference,
+            allocations: [{ orderId: newOrderId, amount: advanceAmount }], credit: 0
+        }) : null;
+        if (!await saveCloudChanges({ new_order: newOrderId, orders: [newOrder, ...carriedOrders].map(orderCloudRow),
+            payment: payment && paymentCloudRow(payment) })) return;
 
         // Build shareable bill HTML
-        const invoiceNum = 'TE-' + nextInvoiceNum;
-        const billElement = buildBillHTML(currentCustomer.name, currentCustomer.address, cart, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason, invoiceNum);
+        const invoiceNum = getInvoiceNumber(newOrder);
+        const billElement = buildBillHTML(customer.name, customer.address, items, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason, invoiceNum, false, newOrder.date);
 
         // Reset inputs
         if (additionalCostAmountInput) additionalCostAmountInput.value = '';
         if (additionalCostReasonInput) additionalCostReasonInput.value = '';
 
         // Share or copy as image
-        await shareAsImage(billElement, `Bill for ${currentCustomer.name}`);
+        await shareAsImage(billElement, `Bill for ${customer.name}`);
 
         // Reset UI
         cart = [];
@@ -1824,6 +1445,7 @@ function startEditBill(orderId) {
     }
 
     editingOrderId = orderId;
+    editingOrderSnapshot = JSON.stringify(order);
     currentCustomer = customers.find(c => orderBelongsToCustomer(order, c));
 
     if (!currentCustomer) {
@@ -1912,26 +1534,27 @@ function cancelEditBill() {
     switchView('billsView');
 }
 
-async function propagateOrderTotalChange(orderId, difference) {
-    if (difference === 0) return;
-
-    const order = orders.find(o => o.id === orderId);
-    if (!order) return;
-
-    if (order.adjustedWithOrderId) {
-        const adjustingOrder = orders.find(o => o.id === order.adjustedWithOrderId);
-        if (adjustingOrder) {
-            adjustingOrder.previousDue = (adjustingOrder.previousDue || 0) + difference;
-            adjustingOrder.totalAmount = (adjustingOrder.totalAmount || 0) + difference;
-
-            if (adjustingOrder.adjustedWithOrderId) {
-                adjustingOrder.paidAmount = adjustingOrder.totalAmount;
-                await propagateOrderTotalChange(adjustingOrder.id, difference);
-            }
-
-            await cloudUpsertOrder(adjustingOrder);
-        }
+function planCarryChange(order, dueChange, projected = new Map()) {
+    const changes = [];
+    const visited = new Set([order.id]);
+    while (dueChange && order.adjustedWithOrderId) {
+        const next = orders.find(o => o.id === order.adjustedWithOrderId);
+        if (!next || visited.has(next.id)) return null;
+        visited.add(next.id);
+        const current = projected.get(next.id) || next;
+        const previousDue = roundMoney((Number(current.previousDue) || 0) + dueChange);
+        const totalAmount = roundMoney(Number(current.totalAmount ?? getOrderTotal(next)) + dueChange);
+        if (previousDue < 0 || totalAmount < getOrderPaid(next)) return null;
+        const change = { order: next, previousDue, totalAmount };
+        changes.push(change);
+        projected.set(next.id, change);
+        order = next;
     }
+    return changes;
+}
+
+function ordersWithCarryChanges(changes) {
+    return changes.map(({ order, previousDue, totalAmount }) => ({ ...order, previousDue, totalAmount }));
 }
 
 async function finalizeBillEdits() {
@@ -1945,64 +1568,50 @@ async function finalizeBillEdits() {
     }
 
     try {
-        // Small delay for interactive feel
-        await new Promise(r => setTimeout(r, 400));
+
 
         const order = orders.find(o => o.id === editingOrderId);
+        if (order && (JSON.stringify(order) !== editingOrderSnapshot || orderReviewRevision !== cloudRevision)) {
+            showToast('Cloud records changed. Reopen this bill before saving edits.', 'error');
+            return;
+        }
         if (!order) {
             closeModal('confirmOrderModal');
             showToast('Error: Bill not found.', 'error');
             return;
         }
 
-        const itemsTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        const itemsTotal = getItemsTotal(cart);
         const additionalCostAmountInput = document.getElementById('additionalCostAmount');
-        const additionalCost = parseFloat(additionalCostAmountInput ? additionalCostAmountInput.value : 0) || 0;
+        const additionalCost = roundMoney(Number(additionalCostAmountInput?.value) || 0);
         const additionalCostReasonInput = document.getElementById('additionalCostReason');
         const additionalCostReason = additionalCostReasonInput ? additionalCostReasonInput.value.trim() : '';
 
-        let rawNewGrandTotal = itemsTotal + (order.previousDue || 0) + additionalCost;
-        let newGrandTotal = rawNewGrandTotal;
-        if (rawNewGrandTotal % 1 !== 0) {
-            newGrandTotal = Math.round(rawNewGrandTotal);
-        }
-        const difference = newGrandTotal - getOrderTotal(order);
-
-        // Update order values
-        order.items = [...cart];
-        order.itemsTotal = itemsTotal;
-        order.additionalCost = additionalCost;
-        order.additionalCostReason = additionalCostReason;
-        order.totalAmount = newGrandTotal;
-
-        if (order.adjustedWithOrderId) {
-            // If adjusted, paidAmount must match totalAmount
-            order.paidAmount = newGrandTotal;
+        const newGrandTotal = roundMoney(itemsTotal + (order.previousDue || 0) + additionalCost);
+        const paid = getOrderPaid(order);
+        const carryChanges = planCarryChange(order, roundMoney(newGrandTotal - paid - getOrderDue(order)));
+        if (newGrandTotal < paid || !carryChanges) {
+            showToast('This edit would conflict with recorded payments or carried balances. Review those records first.', 'error');
+            return;
         }
 
-        // Propagate changes if there is a difference
-        if (difference !== 0) {
-            await propagateOrderTotalChange(editingOrderId, difference);
-        }
-
-        // Save orders & localStorage
-        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
-
-        // Sync updated main order to cloud
-        await cloudUpsertOrder(order);
+        const updated = { ...order, items: [...cart], itemsTotal, additionalCost, additionalCostReason, totalAmount: newGrandTotal };
+        if (!await saveCloudChanges({ orders: [updated, ...ordersWithCarryChanges(carryChanges)].map(orderCloudRow) })) return;
 
         // Build shareable bill HTML
         const invoiceNum = getInvoiceNumber(order);
         const billElement = buildBillHTML(
-            currentCustomer.name,
-            currentCustomer.address,
-            cart,
+            updated.customerName,
+            updated.customerAddress,
+            updated.items,
             newGrandTotal,
             order.previousDue || 0,
             order.paidAmount || 0,
             additionalCost,
             additionalCostReason,
-            invoiceNum
+            invoiceNum,
+            isOrderAdjusted(order),
+            order.date
         );
 
         // Reset inputs
@@ -2071,10 +1680,11 @@ async function finalizeBillEdits() {
 }
 
 // --- Utility: Build bill HTML ---
-function buildBillHTML(customerName, customerAddress, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '', invoiceNum = '') {
-    const now = new Date();
-    const date = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+function buildBillHTML(customerName, customerAddress, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '', invoiceNum = '', carriedForward = false, issuedAt) {
+    const now = new Date(issuedAt);
+    const validDate = Number.isFinite(now.getTime());
+    const date = validDate ? now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Kolkata' }) : 'Unavailable';
+    const time = validDate ? now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '';
 
     const container = document.createElement('div');
     container.style.width = '800px';
@@ -2092,15 +1702,15 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
             </div>
             <div style="text-align: right;">
                 <h2 style="margin: 0; font-size: 24px; color: #334155;">INVOICE</h2>
-                ${invoiceNum ? `<p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Invoice No: <strong>${invoiceNum}</strong></p>` : ''}
+                ${invoiceNum ? `<p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Invoice No: <strong>${escapeHtml(invoiceNum)}</strong></p>` : ''}
                 <p style="margin: ${invoiceNum ? '3px' : '5px'} 0 0 0; color: #64748b; font-size: 14px;">Date: <strong>${date} ${time}</strong></p>
             </div>
         </div>
         
         <div style="margin-bottom: 30px;">
             <p style="margin: 0; font-size: 14px; color: #64748b;">Billed To:</p>
-            <h3 style="margin: 5px 0 0 0; font-size: 18px; color: #1e293b;">${customerName}</h3>
-            ${customerAddress ? `<p style="margin: 3px 0 0 0; font-size: 14px; color: #64748b; white-space: pre-wrap;">${customerAddress}</p>` : ''}
+            <h3 style="margin: 5px 0 0 0; font-size: 18px; color: #1e293b;">${escapeHtml(customerName)}</h3>
+            ${customerAddress ? `<p style="margin: 3px 0 0 0; font-size: 14px; color: #64748b; white-space: pre-wrap;">${escapeHtml(customerAddress)}</p>` : ''}
         </div>
         
         <table style="width: 100%; border-collapse: collapse; margin-bottom: 30px;">
@@ -2118,14 +1728,14 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
 
     let subTotal = 0;
     items.forEach((item, index) => {
-        let itemAmount = item.price * item.quantity;
+        const itemAmount = getLineTotal(item);
         subTotal += itemAmount;
         let amountStr = itemAmount.toFixed(2);
         html += `
             <tr style="border-bottom: 1px solid #f1f5f9;">
                 <td style="padding: 12px; font-size: 14px; color: #334155;">${index + 1}</td>
-                <td style="padding: 12px; font-size: 14px; color: #334155; font-weight: 500;">${item.name}</td>
-                <td style="padding: 12px; text-align: center; font-size: 14px; color: #334155;">${item.quantity}</td>
+                <td style="padding: 12px; font-size: 14px; color: #334155; font-weight: 500;">${escapeHtml(item.name)}</td>
+                <td style="padding: 12px; text-align: center; font-size: 14px; color: #334155;">${escapeHtml(item.quantity)}</td>
                 <td style="padding: 12px; text-align: right; font-size: 14px; color: #334155;">₹${item.price.toFixed(2)}</td>
                 <td style="padding: 12px; text-align: right; font-size: 14px; color: #334155;">₹${amountStr}</td>
             </tr>
@@ -2151,7 +1761,7 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
         let reason = additionalCostReason || 'Misc. Cost';
         html += `
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9;">
-                    <span style="color: #64748b; font-size: 14px;">${reason}</span>
+                    <span style="color: #64748b; font-size: 14px;">${escapeHtml(reason)}</span>
                     <span style="color: #334155; font-size: 14px; font-weight: 500;">₹${additionalCost.toFixed(2)}</span>
                 </div>
         `;
@@ -2195,7 +1805,7 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
 
     html += `
                 <div style="display: flex; justify-content: space-between; padding: 12px 0; border-top: 2px solid #e2e8f0; margin-top: 8px;">
-                    <span style="color: #0f172a; font-size: 18px; font-weight: 700;">Balance Due</span>
+                    <span style="color: #0f172a; font-size: 18px; font-weight: 700;">${carriedForward ? 'Balance carried forward' : 'Balance Due'}</span>
                     <span style="color: #ef4444; font-size: 18px; font-weight: 700;">₹${balanceDue.toFixed(2)}</span>
                 </div>
             </div>
@@ -2213,47 +1823,49 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
 }
 
 // --- Utility: Share HTML as Image ---
-async function shareAsImage(element, title) {
-    element.style.position = 'absolute';
-    element.style.left = '-9999px';
-    element.style.top = '-9999px';
+async function invoiceImage(element) {
+    if (!window.html2canvas) throw new Error('The invoice image library could not load.');
+    Object.assign(element.style, { position: 'absolute', left: '-9999px', top: '0' });
     document.body.appendChild(element);
-
     try {
-        if (!window.html2canvas) {
-            throw new Error('html2canvas not loaded');
-        }
-        const canvas = await html2canvas(element, {
-            scale: 2, // high res
-            backgroundColor: '#ffffff'
-        });
+        const canvas = await html2canvas(element, { scale: 2, backgroundColor: '#ffffff' });
+        return await new Promise((resolve, reject) => canvas.toBlob(
+            blob => blob ? resolve(blob) : reject(new Error('The invoice image could not be generated.')), 'image/png'));
+    } finally {
+        element.remove();
+    }
+}
 
-        canvas.toBlob(async (blob) => {
-            if (!blob) throw new Error('Canvas to Blob failed');
-            const file = new File([blob], 'invoice.png', { type: 'image/png' });
+function downloadFile(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
-            if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-                await navigator.share({
-                    title: title,
-                    files: [file]
-                });
-            } else {
-                // Fallback: try clipboard write
-                try {
-                    const item = new ClipboardItem({ 'image/png': blob });
-                    await navigator.clipboard.write([item]);
-                    showToast('Image copied to clipboard! You can paste it into WhatsApp or other apps.');
-                } catch (err) {
-                    console.error('Clipboard failed', err);
-                    showToast('Could not copy image automatically. You can take a screenshot of the bill.');
+async function shareAsImage(element, title, downloadOnly = false) {
+    try {
+        const blob = await invoiceImage(element);
+        const file = new File([blob], 'invoice.png', { type: 'image/png' });
+        if (!downloadOnly && navigator.share && navigator.canShare?.({ files: [file] })) {
+            try {
+                await navigator.share({ title, files: [file] });
+                return;
+            } catch (err) {
+                if (err.name === 'AbortError') {
+                    showToast('Sharing canceled. You can download the invoice from its preview.');
+                    return;
                 }
             }
-        });
+        }
+        downloadFile(file, file.name);
+        showToast('Invoice image downloaded.');
     } catch (err) {
-        console.error('Image generation failed', err);
-        showToast('Failed to generate image. Please make sure you are online to load the image generator script.');
-    } finally {
-        document.body.removeChild(element);
+        showToast(err.message || 'Invoice image unavailable. Try Print Invoice.', 'error');
     }
 }
 
@@ -2263,11 +1875,14 @@ function handlePaymentCustomerChange() {
 }
 
 function onPaymentCustomerChange() {
+    paymentReviewRevision = cloudRevision;
     const custSelect = document.getElementById('paymentCustomerSelect');
     const amountInput = document.getElementById('paymentAmount');
     const invoiceGroup = document.getElementById('paymentInvoiceGroup');
     const dateGroup = document.getElementById('paymentDateGroup');
     const invoiceIdInput = document.getElementById('paymentDisplayInvoiceId');
+    const dateInput = document.getElementById('paymentInvoiceDate');
+    updatePaymentCredit();
     const billInput = document.getElementById('paymentBillId');
 
     if (billInput) billInput.value = '';
@@ -2291,18 +1906,9 @@ function onPaymentCustomerChange() {
     }
 
     const customerId = custSelect.value;
-    const targetCust = customers.find(c => String(c.id) === String(customerId)) || { id: customerId };
-    const custOrders = orders.filter(o => orderBelongsToCustomer(o, targetCust));
-    let totalDue = 0;
-    const unpaidOrders = [];
-
-    custOrders.forEach(order => {
-        const due = getOrderDue(order);
-        if (due > 0) {
-            totalDue += due;
-            unpaidOrders.push(order);
-        }
-    });
+    const targetCust = customers.find(c => String(c.id) === customerId);
+    const unpaidOrders = getPayableOrders(targetCust);
+    const totalDue = getCustomerTotalDue(targetCust);
 
     if (amountInput) amountInput.value = totalDue > 0 ? totalDue.toFixed(2) : '';
 
@@ -2318,6 +1924,7 @@ function onPaymentCustomerChange() {
 }
 
 function openPaymentModal(orderId = null) {
+    paymentReviewRevision = cloudRevision;
     const custSelect = document.getElementById('paymentCustomerSelect');
     const billInput = document.getElementById('paymentBillId');
     const invoiceGroup = document.getElementById('paymentInvoiceGroup');
@@ -2330,7 +1937,10 @@ function openPaymentModal(orderId = null) {
     customers.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c.id;
-        opt.textContent = c.name;
+        const duplicateName = customers.some(other => other !== c && other.name.trim().toLowerCase() === c.name.trim().toLowerCase());
+        opt.textContent = duplicateName
+            ? [c.name, c.phone, c.address, c.id].filter(Boolean).join(' · ')
+            : c.name;
         custSelect.appendChild(opt);
     });
 
@@ -2340,21 +1950,25 @@ function openPaymentModal(orderId = null) {
     addNewOption.style.fontWeight = 'bold';
     custSelect.appendChild(addNewOption);
 
-    if (orderId) {
-        const order = orders.find(o => o.id === orderId);
-        if (order) {
-            custSelect.value = order.customerId;
-            custSelect.disabled = true;
-            if (billInput) billInput.value = order.id;
+    const order = orders.find(o => o.id === orderId);
+    const customer = order && customers.find(c => orderBelongsToCustomer(order, c));
+    if (orderId && (!order || !customer || isOrderAdjusted(order) || getOrderDue(order) <= 0)) {
+        showToast('Select an outstanding bill with an active customer.', 'error');
+        return;
+    }
 
-            if (invoiceIdInput) invoiceIdInput.value = getInvoiceNumber(order);
-            if (dateInput) dateInput.value = new Date(order.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-            if (invoiceGroup) invoiceGroup.style.display = 'block';
-            if (dateGroup) dateGroup.style.display = 'block';
+    if (order) {
+        custSelect.value = customer.id;
+        custSelect.disabled = true;
+        if (billInput) billInput.value = order.id;
 
-            const pending = getOrderDue(order);
-            if (amountInput) amountInput.value = pending > 0 ? pending.toFixed(2) : 0;
-        }
+        if (invoiceIdInput) invoiceIdInput.value = getInvoiceNumber(order);
+        if (dateInput) dateInput.value = new Date(order.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+        if (invoiceGroup) invoiceGroup.style.display = 'block';
+        if (dateGroup) dateGroup.style.display = 'block';
+
+        const pending = getOrderDue(order);
+        if (amountInput) amountInput.value = pending.toFixed(2);
     } else {
         custSelect.disabled = false;
         custSelect.value = '';
@@ -2364,93 +1978,176 @@ function openPaymentModal(orderId = null) {
         if (amountInput) amountInput.value = '';
     }
 
+    document.getElementById('paymentReceivedDate').value = '';
+    document.getElementById('paymentReference').value = '';
+    document.getElementById('paymentMode').value = 'Cash';
+    updatePaymentCredit();
     openModal('paymentModal');
 }
 
-function savePayment(e) {
-    e.preventDefault();
-    const custSelect = document.getElementById('paymentCustomerSelect');
-    const billInput = document.getElementById('paymentBillId');
-    const amountInput = document.getElementById('paymentAmount');
-    const modeSelect = document.getElementById('paymentMode');
+function readPaymentDate(inputId) {
+    const input = document.getElementById(inputId);
+    const date = input?.value ? new Date(input.value) : new Date();
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
 
-    const customerId = custSelect.value || (orders.find(o => o.id === billInput.value) || {}).customerId;
-    const orderId = billInput.value;
-    const amount = parseFloat(amountInput.value);
-    const paymentMode = modeSelect ? modeSelect.value : 'Cash';
+function getPaymentReversal(paymentId) {
+    return paymentHistory.find(p => p.details?.reverses === paymentId);
+}
 
-    if (isNaN(amount) || amount <= 0) {
-        showToast('Invalid amount');
-        return;
-    }
+function getCustomerCredit(customerId) {
+    return roundMoney(paymentHistory.reduce((balance, payment) => {
+        if (String(payment.customerId) !== String(customerId)) return balance;
+        return balance + (payment.details?.credit || 0);
+    }, 0));
+}
 
-    const affectedOrders = [];
-    const targetCustomer = customers.find(c => String(c.id) === String(customerId)) || { id: customerId };
+function hasPaymentReference(customerId, mode, reference) {
+    return !!reference && paymentHistory.some(payment => String(payment.customerId) === String(customerId) &&
+        payment.mode === mode && payment.details?.kind === 'receipt' &&
+        payment.details.reference?.toLowerCase() === reference.toLowerCase() && !getPaymentReversal(payment.id));
+}
 
-    if (orderId) {
-        const order = orders.find(o => o.id === orderId);
-        if (order) {
-            const currentPaid = getOrderPaid(order);
-            const total = getOrderTotal(order);
-            order.paidAmount = Math.min(total, currentPaid + amount);
-            affectedOrders.push(orderId);
-            // Sync updated order to cloud
-            cloudUpsertOrder(order);
-        }
-    } else {
-        if (!customerId) {
-            showToast('Select a customer');
-            return;
-        }
-        let remaining = amount;
-        const custOrders = orders.filter(o => orderBelongsToCustomer(o, targetCustomer) && !isOrderAdjusted(o)).sort((a, b) => new Date(a.date) - new Date(b.date));
+function updatePaymentCredit() {
+    const customerId = document.getElementById('paymentCustomerSelect').value;
+    const credit = getCustomerCredit(customerId);
+    document.getElementById('paymentCreditBalance').textContent = credit > 0
+        ? 'Available customer credit: ₹' + credit.toFixed(2) : '';
+    document.getElementById('applyPaymentCredit').hidden = credit <= 0;
+}
 
-        for (const order of custOrders) {
-            if (remaining <= 0) break;
-            const pending = getOrderDue(order);
-            if (pending > 0) {
-                const pay = Math.min(pending, remaining);
-                order.paidAmount = getOrderPaid(order) + pay;
-                remaining -= pay;
-                affectedOrders.push(order.id);
-                // Sync updated order to cloud
-                cloudUpsertOrder(order);
-            }
-        }
-
-        if (remaining > 0) {
-            showToast(`Payment recorded. ₹${(amount - remaining).toFixed(2)} applied to dues. Excess ₹${remaining.toFixed(2)} recorded in payment history.`);
-        }
-    }
-
-    // Save payment history
-    const historyRecord = {
-        id: 'pay_' + Date.now(),
-        customerId: customerId,
-        customerName: (customers.find(c => String(c.id) === String(customerId)) || {}).name || (targetCustomer ? targetCustomer.name : 'Unknown'),
-        amount: amount,
-        mode: paymentMode,
-        date: new Date().toISOString(),
-        orderIds: [...new Set(affectedOrders)]
+function makePaymentRecord(customer, amount, mode, date, details) {
+    return {
+        id: 'pay_' + (globalThis.crypto?.randomUUID?.() || Date.now() + '_' + Math.random().toString(36).slice(2)),
+        customerId: customer.id,
+        customerName: customer.name,
+        amount,
+        mode,
+        date,
+        details
     };
-    paymentHistory.push(historyRecord);
-    localStorage.setItem('taruchhaya_payments', JSON.stringify(paymentHistory));
-    // Sync payment history to cloud
-    cloudInsertPayment(historyRecord);
+}
 
-    localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
-    closeModal('paymentModal');
-    
-    // Update all views
+function refreshPaymentViews() {
     renderBills();
     renderPaymentHistory();
     renderCustomersList();
     renderHomeDashboard();
     updateOrderStepUI();
-    if (document.getElementById('unpaidModal') && document.getElementById('unpaidModal').classList.contains('active')) {
-        showUnpaidModal();
+    if (document.getElementById('unpaidModal')?.classList.contains('active')) showUnpaidModal();
+}
+
+async function savePayment(e, useCredit = false) {
+    e.preventDefault();
+    if (paymentReviewRevision !== cloudRevision) {
+        showToast('Cloud records changed. Reopen Record Payment to check the latest balance.', 'error');
+        return;
     }
-    showToast('Payment recorded successfully!', 'success');
+    const customerId = document.getElementById('paymentCustomerSelect').value;
+    const orderId = document.getElementById('paymentBillId').value;
+    const amount = roundMoney(Number(document.getElementById('paymentAmount').value));
+    const mode = document.getElementById('paymentMode').value;
+    const date = readPaymentDate('paymentReceivedDate');
+    const reference = useCredit ? '' : document.getElementById('paymentReference').value.trim();
+    const customer = customers.find(c => String(c.id) === customerId);
+    if (!customer || !Number.isFinite(amount) || amount <= 0 || !date) {
+        showToast('Select a customer and enter a valid amount and payment date.', 'error');
+        return;
+    }
+    if (hasPaymentReference(customerId, mode, reference)) {
+        showToast('This payment reference has already been recorded for this customer.', 'error');
+        return;
+    }
+
+    const payable = getPayableOrders(customer);
+    const targets = orderId ? payable.filter(order => order.id === orderId) : payable;
+    if (orderId && !targets.length) {
+        showToast('This bill is no longer payable. Reopen the payment form and check the balance.', 'error');
+        return;
+    }
+
+    const totalDue = roundMoney(targets.reduce((sum, order) => sum + getOrderDue(order), 0));
+    if (useCredit && (amount > getCustomerCredit(customerId) || amount > totalDue)) {
+        showToast('Enter an amount within both the available credit and the outstanding balance.', 'error');
+        return;
+    }
+
+    let remaining = amount;
+    const allocations = [];
+    const changedOrders = [];
+    for (const order of targets) {
+        if (remaining <= 0) break;
+        const applied = Math.min(getOrderDue(order), remaining);
+        const paidAmount = roundMoney(getOrderPaid(order) + applied);
+        remaining = roundMoney(remaining - applied);
+        allocations.push({ orderId: order.id, amount: applied });
+        changedOrders.push({ ...order, paidAmount, totalAmount: getOrderTotal(order) });
+    }
+
+    const payment = makePaymentRecord(customer, amount, useCredit ? 'Customer Credit' : mode, date, {
+        kind: useCredit ? 'credit' : 'receipt',
+        reference,
+        allocations,
+        credit: useCredit ? -amount : remaining
+    });
+    if (!await saveCloudChanges({ orders: changedOrders.map(orderCloudRow), payment: paymentCloudRow(payment) })) return;
+    closeModal('paymentModal');
+    refreshPaymentViews();
+    showToast(useCredit ? 'Customer credit applied.' : remaining > 0
+        ? 'Payment recorded. ₹' + remaining.toFixed(2) + ' is available as customer credit.'
+        : 'Payment recorded successfully.');
+}
+
+async function reversePayment(paymentId) {
+    const payment = paymentHistory.find(p => p.id === paymentId);
+    const details = payment?.details;
+    if (!Array.isArray(details?.allocations) || !['receipt', 'credit'].includes(details.kind)) return;
+    const reason = document.getElementById('paymentReversalReason').value.trim();
+    if (!reason) {
+        showToast('Enter a reason for the reversal.', 'error');
+        return;
+    }
+    if (!await showCustomConfirm('Reverse this entry and update the affected invoice balances?')) return;
+    if (!paymentHistory.includes(payment) || getPaymentReversal(paymentId)) {
+        showToast('This payment changed. Reopen it from Payment History.', 'error');
+        return;
+    }
+    if (details.credit > 0 && getCustomerCredit(payment.customerId) < details.credit) {
+        showToast('Reverse enough credit applications for this customer before reversing this receipt.', 'error');
+        return;
+    }
+
+    const direct = [];
+    const projected = new Map();
+    for (const allocation of details.allocations) {
+        const order = orders.find(o => o.id === allocation.orderId);
+        const paid = getOrderPaid(order);
+        if (!order || paid < allocation.amount) {
+            showToast('A linked invoice is missing or its paid amount has changed. Review its records first.', 'error');
+            return;
+        }
+        const paidAmount = roundMoney(paid - allocation.amount);
+        const dueChange = roundMoney(Math.max(0, getOrderTotal(order) - paidAmount) - getOrderDue(order));
+        if (!planCarryChange(order, dueChange, projected)) {
+            showToast('A carried balance could not be updated safely. Review the linked bills first.', 'error');
+            return;
+        }
+        direct.push({ order, paidAmount });
+    }
+
+    const changedOrders = new Map(ordersWithCarryChanges([...projected.values()]).map(order => [order.id, order]));
+    for (const { order, paidAmount } of direct) {
+        changedOrders.set(order.id, { ...(changedOrders.get(order.id) || order), paidAmount });
+    }
+    const reversal = makePaymentRecord({ id: payment.customerId, name: payment.customerName }, payment.amount,
+        payment.mode, new Date().toISOString(), {
+            kind: 'reversal', reverses: paymentId, reason, allocations: details.allocations, credit: -details.credit
+        });
+    if (!await saveCloudChanges({ orders: [...changedOrders.values()].map(orderCloudRow), payment: paymentCloudRow(reversal) })) return;
+
+    closeModal('paymentDetailsModal');
+    refreshPaymentViews();
+    showToast('Payment reversed. Record a new payment if a correction is needed.');
 }
 
 // --- Customers View Management ---
@@ -2477,7 +2174,7 @@ function renderCustomersList() {
     }
 
     if (sortedCustomers.length === 0) {
-        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No customers matching "${query.replace(/"/g, '&quot;')}".</p>`;
+        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No customers matching "${escapeHtml(query)}".</p>`;
         return;
     }
 
@@ -2496,9 +2193,9 @@ function renderCustomersList() {
 
         card.innerHTML = `
             <div>
-                <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #1e293b;">${cust.name}</h3>
+                <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #1e293b;">${escapeHtml(cust.name)}</h3>
                 <div style="margin-top: 4px; display: flex; flex-direction: column; gap: 2px;">
-                    <span style="font-size: 0.9rem; color: #64748b;">📞 ${cust.phone || 'N/A'}</span>
+                    <span style="font-size: 0.9rem; color: #64748b;">📞 ${escapeHtml(cust.phone || 'N/A')}</span>
                     <span style="font-size: 0.9rem; color: #64748b;">Added: ${dateString}</span>
                 </div>
             </div>
@@ -2509,14 +2206,14 @@ function renderCustomersList() {
                 </span>
                 
                 <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                    ${totalDue > 0 ? `<button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.85rem; border-color: var(--success-color); color: var(--success-color); background: transparent; border-radius: 8px; font-weight: 600;" onclick="openPaymentForCustomer('${cust.id}')">💰 Pay</button>` : ''}
-                    <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 0.9rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px; display: flex; align-items: center; gap: 4px;" onclick="editCustomer('${cust.id}')">✏️ Edit</button>
-                    <button class="btn-danger" style="padding: 4px 8px; font-size: 0.9rem; border: none; background: transparent; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--danger-color);" onclick="deleteCustomer('${cust.id}')">🗑️ Delete</button>
+                    ${totalDue > 0 ? `<button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.85rem; border-color: var(--success-color); color: var(--success-color); background: transparent; border-radius: 8px; font-weight: 600;" onclick="openPaymentForCustomer(${htmlArgument(cust.id)})">💰 Pay</button>` : ''}
+                    <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 0.9rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px; display: flex; align-items: center; gap: 4px;" onclick="editCustomer(${htmlArgument(cust.id)})">✏️ Edit</button>
+                    <button class="btn-danger" style="padding: 4px 8px; font-size: 0.9rem; border: none; background: transparent; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--danger-color);" onclick="deleteCustomer(${htmlArgument(cust.id)})">🗑️ Delete</button>
                 </div>
             </div>
             
             <div style="margin-top: 5px;">
-                <button class="btn btn-secondary" style="padding: 6px 16px; font-size: 0.95rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px;" onclick="viewCustomerBills('${cust.name}')">View Bills</button>
+                <button class="btn btn-secondary" style="padding: 6px 16px; font-size: 0.95rem; border-color: var(--accent-color); color: var(--accent-color); background: transparent; border-radius: 8px;" onclick="viewCustomerBills(${htmlArgument(cust.id)})">View Bills</button>
             </div>
         `;
         container.appendChild(card);
@@ -2532,16 +2229,63 @@ function openPaymentForCustomer(customerId) {
     }
 }
 
-function viewCustomerBills(customerName) {
+function viewCustomerBills(customerId) {
+    billsCustomerId = customerId;
+    document.getElementById('billSearchInput').value = '';
     switchView('billsView');
-    const billSearchInput = document.getElementById('billSearchInput');
-    if (billSearchInput) {
-        billSearchInput.value = customerName;
-        renderBills();
-    }
+}
+
+function clearBillsCustomerFilter() {
+    billsCustomerId = null;
+    renderBills();
 }
 
 // --- Dashboard Management ---
+
+function outstandingByDate(order, carriedByTarget, visiting = new Set()) {
+    if (visiting.has(order.id)) return [];
+    visiting.add(order.id);
+    const linked = (carriedByTarget.get(order.id) || [])
+        .flatMap(source => outstandingByDate(source, carriedByTarget, visiting))
+        .sort((a, b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
+    visiting.delete(order.id);
+
+    const total = getOrderTotal(order);
+    let carried = Math.min(total, Math.max(0, Number(order.previousDue) || 0));
+    const current = roundMoney(total - carried);
+    const charges = [];
+    for (const entry of linked) {
+        const amount = Math.min(carried, entry.amount);
+        if (amount > 0) charges.push({ date: entry.date, amount });
+        carried = roundMoney(carried - amount);
+    }
+    if (carried > 0) charges.unshift({ date: null, amount: carried });
+    const issuedAt = Date.parse(order.date);
+    if (current > 0) charges.push({ date: Number.isFinite(issuedAt) ? issuedAt : null, amount: current });
+
+    let paid = getOrderPaid(order);
+    return charges.flatMap(charge => {
+        const applied = Math.min(paid, charge.amount);
+        paid = roundMoney(paid - applied);
+        const amount = roundMoney(charge.amount - applied);
+        return amount > 0 ? [{ ...charge, amount }] : [];
+    });
+}
+
+const reportingMonth = new Intl.DateTimeFormat('en-IN', {
+    year: 'numeric', month: '2-digit', timeZone: 'Asia/Kolkata'
+});
+
+function isInReportingMonth(date, now) {
+    return Number.isFinite(date.getTime()) && reportingMonth.format(date) === reportingMonth.format(now);
+}
+
+function addProductSale(stats, item) {
+    const name = item.name || 'Unknown Product';
+    const key = item.productId ? 'id:' + item.productId : 'legacy:' + name;
+    if (!stats[key]) stats[key] = { name, quantity: 0 };
+    stats[key].quantity += Number(item.quantity) || 0;
+}
 
 function renderHomeDashboard() {
     // Basic stats
@@ -2552,36 +2296,42 @@ function renderHomeDashboard() {
     let totalUnpaid = 0;
     let currentAmount = 0;
     let overdueAmount = 0;
-
+    let unknownAgeAmount = 0;
+    const overdueBefore = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const carriedByTarget = new Map();
+    for (const order of orders) {
+        const targetId = order.adjustedWithOrderId;
+        if (!targetId) continue;
+        if (!carriedByTarget.has(targetId)) carriedByTarget.set(targetId, []);
+        carriedByTarget.get(targetId).push(order);
+    }
     const now = new Date();
 
     // Calculate top customer and product stats (this month & overall)
-    const customerStatsMonth = {};
-    const customerStatsAll = {};
-    const productStatsMonth = {};
-    const productStatsAll = {};
+    const customerStatsMonth = Object.create(null);
+    const customerStatsAll = Object.create(null);
+    const productStatsMonth = Object.create(null);
+    const productStatsAll = Object.create(null);
 
     orders.forEach(order => {
         // Calculate true net revenue (items total + additional costs) instead of totalAmount (which double-counts previous dues)
-        const netSales = (order.itemsTotal || 0) + (order.additionalCost || 0);
+        const netSales = getOrderRevenue(order);
         totalRevenue += netSales;
 
         const due = getOrderDue(order);
         if (due > 0 && !isOrderAdjusted(order)) {
             totalUnpaid += due;
-            const orderDate = new Date(order.date);
-            const daysOld = (now - orderDate) / (1000 * 60 * 60 * 24);
-            if (daysOld > 30) {
-                overdueAmount += due;
-            } else {
-                currentAmount += due;
+            for (const { date, amount } of outstandingByDate(order, carriedByTarget)) {
+                if (date === null) unknownAgeAmount += amount;
+                else if (date < overdueBefore) overdueAmount += amount;
+                else currentAmount += amount;
             }
         }
 
         const custId = order.customerId;
         const custName = order.customerName || (customers.find(c => orderBelongsToCustomer(order, c)) || {}).name || 'Unknown Customer';
         const orderDate = new Date(order.date);
-        const isCurrentMonth = orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear();
+        const isCurrentMonth = isInReportingMonth(orderDate, now);
 
         // Customer All-Time Stats
         if (custId) {
@@ -2600,18 +2350,8 @@ function renderHomeDashboard() {
 
         // Product Stats
         (order.items || []).forEach(item => {
-            const prodName = item.name || 'Unknown Product';
-            if (!productStatsAll[prodName]) {
-                productStatsAll[prodName] = { name: prodName, quantity: 0 };
-            }
-            productStatsAll[prodName].quantity += (parseFloat(item.quantity) || 0);
-
-            if (isCurrentMonth) {
-                if (!productStatsMonth[prodName]) {
-                    productStatsMonth[prodName] = { name: prodName, quantity: 0 };
-                }
-                productStatsMonth[prodName].quantity += (parseFloat(item.quantity) || 0);
-            }
+            addProductSale(productStatsAll, item);
+            if (isCurrentMonth) addProductSale(productStatsMonth, item);
         });
     });
 
@@ -2692,7 +2432,8 @@ function renderHomeDashboard() {
         totalUnpaidEl.textContent = `₹${totalUnpaid.toFixed(2)}`;
     }
     if (unpaidBreakdownEl) {
-        unpaidBreakdownEl.textContent = `Cur: ₹${currentAmount.toFixed(2)} | Over: ₹${overdueAmount.toFixed(2)}`;
+        unpaidBreakdownEl.textContent = `Current ₹${currentAmount.toFixed(2)} · Overdue ₹${overdueAmount.toFixed(2)}` +
+            (unknownAgeAmount > 0 ? ` · Age unknown ₹${unknownAgeAmount.toFixed(2)}` : '');
     }
 }
 
@@ -2729,7 +2470,7 @@ function showUnpaidModal() {
     
     if (unpaidOrders.length === 0) {
         container.innerHTML = query 
-            ? `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No unpaid invoices matching "${query.replace(/"/g, '&quot;')}".</p>`
+            ? `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No unpaid invoices matching "${escapeHtml(query)}".</p>`
             : '<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">🎉 No unpaid invoices! All dues are clear.</p>';
     } else {
         unpaidOrders.forEach(order => {
@@ -2750,14 +2491,14 @@ function showUnpaidModal() {
             
             card.innerHTML = `
                 <div>
-                    <h3 style="margin: 0; font-size: 1.05rem; color: var(--text-color);">${customerName}</h3>
+                    <h3 style="margin: 0; font-size: 1.05rem; color: var(--text-color);">${escapeHtml(customerName)}</h3>
                     <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; font-weight: 500;">
-                        <span>#${invoiceNum}</span> &bull; <span>${dateStr}</span>
+                        <span>#${escapeHtml(invoiceNum)}</span> &bull; <span>${dateStr}</span>
                     </div>
                 </div>
                 <div style="text-align: right;">
                     <div style="color: var(--danger-color); font-weight: bold; font-size: 1.1rem;">₹${order.dueAmount.toFixed(2)}</div>
-                    <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.8rem; margin-top: 6px; border-color: var(--accent-color); color: var(--accent-color); background: transparent;" onclick="closeModal('unpaidModal'); openPaymentModal('${order.id}')">Pay Now</button>
+                    <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.8rem; margin-top: 6px; border-color: var(--accent-color); color: var(--accent-color); background: transparent;" onclick="closeModal('unpaidModal'); openPaymentModal(${htmlArgument(order.id)})">Pay Now</button>
                 </div>
             `;
             container.appendChild(card);
@@ -2778,12 +2519,12 @@ function showTopCustomersModal() {
     container.innerHTML = '';
     
     const now = new Date();
-    const customerStats = {};
+    const customerStats = Object.create(null);
     
     orders.forEach(order => {
         if (order.customerId) {
             const orderDate = new Date(order.date);
-            if (orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear()) {
+            if (isInReportingMonth(orderDate, now)) {
                 const custId = order.customerId;
                 const custName = order.customerName || (customers.find(c => orderBelongsToCustomer(order, c)) || {}).name || 'Unknown Customer';
                 if (!customerStats[custId]) {
@@ -2794,7 +2535,7 @@ function showTopCustomersModal() {
                         orderCount: 0
                     };
                 }
-                const netSales = (order.itemsTotal || 0) + (order.additionalCost || 0);
+                const netSales = getOrderRevenue(order);
                 customerStats[custId].totalRevenue += netSales;
                 customerStats[custId].orderCount += 1;
             }
@@ -2829,7 +2570,7 @@ function showTopCustomersModal() {
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <div style="font-size: 1.5rem;">${medal}</div>
                     <div>
-                        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text-color);">${cust.name}</h3>
+                        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text-color);">${escapeHtml(cust.name)}</h3>
                         <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; font-weight: 500;">
                             ${cust.orderCount} order${cust.orderCount > 1 ? 's' : ''} this month
                         </div>
@@ -2853,21 +2594,12 @@ function showTopProductsModal() {
     container.innerHTML = '';
     
     const now = new Date();
-    const productStats = {};
+    const productStats = Object.create(null);
     
     orders.forEach(order => {
         const orderDate = new Date(order.date);
-        if (orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear()) {
-            (order.items || []).forEach(item => {
-                const prodName = item.name || 'Unknown Product';
-                if (!productStats[prodName]) {
-                    productStats[prodName] = {
-                        name: prodName,
-                        quantity: 0
-                    };
-                }
-                productStats[prodName].quantity += item.quantity;
-            });
+        if (isInReportingMonth(orderDate, now)) {
+            (order.items || []).forEach(item => addProductSale(productStats, item));
         }
     });
     
@@ -2899,7 +2631,7 @@ function showTopProductsModal() {
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <div style="font-size: 1.5rem;">${medal}</div>
                     <div>
-                        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text-color);">${prod.name}</h3>
+                        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text-color);">${escapeHtml(prod.name)}</h3>
                         <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; font-weight: 500;">
                             ${prod.quantity} units sold
                         </div>
@@ -2975,12 +2707,15 @@ function renderPaymentHistory() {
             const mode = (pay.mode || '').toLowerCase();
             const amountStr = (pay.amount || 0).toString();
             const dateStr = new Date(pay.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).toLowerCase();
-            return custName.includes(query) || mode.includes(query) || amountStr.includes(query) || dateStr.includes(query);
+            const invoiceIds = pay.details?.allocations?.map(a => a.orderId) || pay.orderIds || [];
+            return custName.includes(query) || mode.includes(query) || amountStr.includes(query) ||
+                dateStr.includes(query) || pay.details?.reference?.toLowerCase().includes(query) ||
+                invoiceIds.some(id => getInvoiceNumber({ id }).toLowerCase().includes(query));
         });
     }
 
     if (filteredHistory.length === 0) {
-        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No payment records found matching "${query.replace(/"/g, '&quot;')}".</p>`;
+        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No payment records found matching "${escapeHtml(query)}".</p>`;
         return;
     }
 
@@ -2996,15 +2731,19 @@ function renderPaymentHistory() {
         card.style.marginBottom = '10px';
         card.style.cursor = 'pointer';
         card.onclick = () => viewPaymentBill(pay.id);
+        const kind = pay.details?.kind;
+        const status = kind === 'reversal' ? 'Reversal' : getPaymentReversal(pay.id) ? 'Reversed' : '';
+        const amountPrefix = kind === 'reversal' ? '− ' : kind === 'credit' ? '' : '+ ';
+        const amountColor = kind === 'reversal' || status || kind === 'credit' ? 'var(--text-secondary)' : 'var(--success-color)';
         card.innerHTML = `
             <div class="bill-card-header" style="border-bottom: none; padding-bottom: 0;">
                 <div>
-                    <h3 style="margin:0; font-size:1.05rem; color: var(--text-color);">${pay.customerName}</h3>
+                    <h3 style="margin:0; font-size:1.05rem; color: var(--text-color);">${escapeHtml(pay.customerName)}</h3>
                     <span class="bill-date" style="display:block; margin-top:4px;">${dateString} at ${timeString}</span>
                 </div>
                 <div style="text-align: right;">
-                    <span style="display:block; color:var(--success-color); font-weight:bold; font-size:1.1rem;">+ ₹${pay.amount.toFixed(2)}</span>
-                    <span style="font-size:0.8rem; color:var(--text-secondary); background:var(--panel-border); padding:2px 6px; border-radius:4px; margin-top:4px; display:inline-block;">${pay.mode}</span>
+                    <span style="display:block; color:${amountColor}; font-weight:bold; font-size:1.1rem;">${amountPrefix}₹${pay.amount.toFixed(2)}</span>
+                    <span style="font-size:0.8rem; color:var(--text-secondary); background:var(--panel-border); padding:2px 6px; border-radius:4px; margin-top:4px; display:inline-block;">${escapeHtml(pay.mode)}${status ? ' · ' + status : ''}</span>
                 </div>
             </div>
         `;
@@ -3013,24 +2752,54 @@ function renderPaymentHistory() {
 }
 
 function viewPaymentBill(paymentId) {
-    const pay = paymentHistory.find(p => p.id === paymentId);
-    if (!pay) return;
-
-    let targetOrderId = null;
-    if (pay.orderIds && pay.orderIds.length > 0) {
-        targetOrderId = pay.orderIds[pay.orderIds.length - 1];
-    } else {
-        const custOrders = orders.filter(o => o.customerId === pay.customerId && new Date(o.date) <= new Date(pay.date));
-        if (custOrders.length > 0) {
-            targetOrderId = custOrders[custOrders.length - 1].id;
-        }
+    const payment = paymentHistory.find(p => p.id === paymentId);
+    if (!payment) return;
+    const details = payment.details;
+    const reversal = getPaymentReversal(paymentId);
+    const body = document.getElementById('paymentDetailsBody');
+    body.replaceChildren();
+    const lines = [
+        payment.customerName || 'Unknown customer',
+        (details?.kind === 'reversal' ? 'Reversed amount' : 'Amount') + ': ₹' + payment.amount.toFixed(2),
+        payment.mode + ' · ' + new Date(payment.date).toLocaleString('en-IN')
+    ];
+    if (details?.reference) lines.push('Reference: ' + details.reference);
+    if (reversal) lines.push('Reversed: ' + reversal.details.reason);
+    if (details?.reason) lines.push('Reversal reason: ' + details.reason);
+    if (details?.credit) {
+        lines.push((details.credit > 0 ? 'Credit added: ₹' : 'Credit used or reversed: ₹') +
+            Math.abs(details.credit).toFixed(2));
+    }
+    if (!Array.isArray(details?.allocations)) {
+        lines.push('Invoice allocation amounts are unavailable for this older entry.');
+    }
+    for (const line of lines) {
+        const p = document.createElement('p');
+        p.textContent = line;
+        body.appendChild(p);
     }
 
-    if (targetOrderId) {
-        showBillPreviewModal(targetOrderId);
-    } else {
-        showToast('No specific bill found for this payment.');
+    const allocations = details?.allocations || (payment.orderIds || []).map(orderId => ({ orderId }));
+    for (const { orderId, amount } of allocations) {
+        const order = orders.find(o => o.id === orderId);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-secondary';
+        button.textContent = getInvoiceNumber({ id: orderId }) +
+            (amount == null ? '' : ' · ₹' + amount.toFixed(2)) + (order ? '' : ' · Bill unavailable');
+        button.disabled = !order;
+        button.onclick = () => {
+            closeModal('paymentDetailsModal');
+            showBillPreviewModal(orderId);
+        };
+        body.appendChild(button);
     }
+
+    const controls = document.getElementById('paymentReversalControls');
+    controls.hidden = !details || !['receipt', 'credit'].includes(details.kind) || !!reversal;
+    document.getElementById('paymentReversalReason').value = '';
+    document.getElementById('reversePaymentButton').onclick = () => reversePayment(paymentId);
+    openModal('paymentDetailsModal');
 }
 
 function showBillPreviewModal(orderId) {
@@ -3039,10 +2808,12 @@ function showBillPreviewModal(orderId) {
 
     const customer = customers.find(c => c.id === order.customerId) || {};
     const customerName = order.customerName || customer.name || 'Customer';
-    const customerAddress = order.customerAddress || customer.address || '';
+    const customerAddress = order.customerAddress ?? '';
     const invoiceNum = getInvoiceNumber(order);
-    const billElement = buildBillHTML(customerName, customerAddress, order.items, order.totalAmount, order.previousDue || 0, order.paidAmount || 0, order.additionalCost || 0, order.additionalCostReason || '', invoiceNum);
+    const billElement = buildBillHTML(customerName, customerAddress, order.items, getOrderTotal(order), order.previousDue || 0, getOrderPaid(order), order.additionalCost || 0, order.additionalCostReason || '', invoiceNum, isOrderAdjusted(order), order.date);
 
+    document.getElementById('previewDownloadBtn').onclick = () => shareBill(orderId, true);
+    document.getElementById('invoiceHistoryBtn').onclick = () => showInvoiceHistory(orderId);
     const previewContent = document.getElementById('billPreviewContent');
     if (!previewContent) return;
 
@@ -3062,6 +2833,65 @@ function showBillPreviewModal(orderId) {
     }
 
     openModal('billPreviewModal');
+}
+
+async function showInvoiceHistory(orderId) {
+    const content = document.getElementById('invoiceHistoryContent');
+    closeModal('billPreviewModal');
+    openModal('invoiceHistoryModal');
+    content.textContent = 'Loading invoice history…';
+    const { data, error } = await supabaseClient.from('taruchhaya_invoice_audit')
+        .select('changed_at,changed_by,action,before_record,after_record')
+        .eq('invoice_id', orderId).order('id', { ascending: false }).limit(200);
+    if (!signedIn) return;
+    if (error || !data.length) {
+        content.textContent = error ? 'Could not load the invoice history.' : 'No changes have been recorded since invoice auditing was enabled.';
+        return;
+    }
+    const list = document.createElement('ol');
+    for (const entry of data) {
+        const item = document.createElement('li');
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        const actions = { INSERT: 'Created', UPDATE: 'Updated', DELETE: 'Deleted' };
+        summary.textContent = actions[entry.action] + ' · ' + new Date(entry.changed_at).toLocaleString('en-IN') +
+            ' · ' + (entry.changed_by || 'Database maintenance');
+        const values = document.createElement('pre');
+        values.style.whiteSpace = 'pre-wrap';
+        values.style.overflowWrap = 'anywhere';
+        values.textContent = JSON.stringify({ Before: entry.before_record, After: entry.after_record }, null, 2);
+        details.append(summary, values);
+        item.appendChild(details);
+        list.appendChild(item);
+    }
+    content.replaceChildren(list);
+}
+
+function csvValue(value) {
+    const text = String(value ?? '');
+    // Spreadsheet apps can interpret customer-entered values as formulas.
+    const safe = typeof value === 'string' && /^[\s]*[=+@-]/.test(text) ? "'" + text : text;
+    return '"' + safe.replaceAll('"', '""') + '"';
+}
+
+function exportAccountingCsv(kind) {
+    if (!signedIn || cloudRevision === null) {
+        showToast('Load your cloud records before exporting.', 'error');
+        return;
+    }
+    const invoices = kind === 'invoices';
+    const headers = invoices
+        ? ['Invoice', 'Issued at', 'Customer ID', 'Customer', 'Current sale', 'Previous due', 'Total', 'Paid', 'Outstanding', 'Carried to']
+        : ['Payment ID', 'Payment date', 'Customer ID', 'Customer', 'Type', 'Mode', 'Amount', 'Credit change', 'Reference', 'Invoice allocations', 'Reverses', 'Reason'];
+    const rows = invoices
+        ? orders.map(o => [getInvoiceNumber(o), o.date, o.customerId, o.customerName, getOrderRevenue(o), o.previousDue,
+            getOrderTotal(o), getOrderPaid(o), isOrderAdjusted(o) ? 0 : getOrderDue(o), o.adjustedWithOrderId])
+        : paymentHistory.map(p => [p.id, p.date, p.customerId, p.customerName, p.details?.kind || 'legacy', p.mode,
+            p.amount, p.details?.credit, p.details?.reference,
+            p.details?.allocations?.map(a => getInvoiceNumber({ id: a.orderId }) + ' ' + a.amount.toFixed(2)).join('; '),
+            p.details?.reverses, p.details?.reason]);
+    downloadFile(new Blob(['\uFEFF', [headers, ...rows].map(row => row.map(csvValue).join(',')).join('\r\n')],
+        { type: 'text/csv;charset=utf-8' }), kind + '.csv');
 }
 
 // --- Bills Management ---
@@ -3091,6 +2921,10 @@ function renderBills() {
     const container = document.getElementById('billsListContainer');
     if (!container) return;
     container.innerHTML = '';
+    const selectedCustomer = customers.find(c => String(c.id) === billsCustomerId);
+    const clearCustomer = document.getElementById('clearBillsCustomer');
+    clearCustomer.hidden = !selectedCustomer;
+    clearCustomer.textContent = selectedCustomer ? 'Clear customer filter: ' + selectedCustomer.name : '';
 
     if (orders.length === 0) {
         container.innerHTML = '<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">No bills saved yet.</p>';
@@ -3101,12 +2935,12 @@ function renderBills() {
     const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
 
     // Filter orders based on query and current tab filter
-    let filteredOrders = orders;
+    let filteredOrders = selectedCustomer ? orders.filter(order => orderBelongsToCustomer(order, selectedCustomer)) : orders;
 
     if (currentBillsFilter === 'unpaid') {
         filteredOrders = filteredOrders.filter(o => getOrderDue(o) > 0 && !isOrderAdjusted(o));
     } else if (currentBillsFilter === 'paid') {
-        filteredOrders = filteredOrders.filter(o => getOrderDue(o) <= 0 || isOrderAdjusted(o));
+        filteredOrders = filteredOrders.filter(o => getOrderDue(o) <= 0 && !isOrderAdjusted(o));
     }
 
     if (query) {
@@ -3120,47 +2954,41 @@ function renderBills() {
     }
 
     if (filteredOrders.length === 0) {
-        let emptyMsg = `No bills found matching "${query.replace(/"/g, '&quot;')}".`;
+        let emptyMsg = `No bills found matching "${query}".`;
         if (!query) {
             if (currentBillsFilter === 'unpaid') emptyMsg = '🎉 No unpaid bills found! All bills are fully paid.';
             else if (currentBillsFilter === 'paid') emptyMsg = 'No fully paid bills yet.';
         }
-        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">${emptyMsg}</p>`;
+        container.innerHTML = `<p style="text-align:center; color:var(--text-secondary); margin-top:20px; font-style:italic;">${escapeHtml(emptyMsg)}</p>`;
         return;
     }
 
     // Show newest orders first
     const sortedOrders = [...filteredOrders].reverse();
 
-    // Group by customer
-    const groupedOrders = {};
-    sortedOrders.forEach(order => {
-        const customerName = order.customerName ||
-            (customers.find(c => orderBelongsToCustomer(order, c)) || {}).name ||
-            'Unknown Customer';
-
-        if (!groupedOrders[customerName]) {
-            groupedOrders[customerName] = [];
+    const groupedOrders = new Map();
+    for (const order of sortedOrders) {
+        const customer = customers.find(c => orderBelongsToCustomer(order, c));
+        const customerId = customer?.id ?? order.customerId;
+        const key = customerId ? 'customer:' + customerId : 'invoice:' + order.id;
+        if (!groupedOrders.has(key)) {
+            groupedOrders.set(key, {
+                customerName: customer?.name || order.customerName || 'Unknown Customer',
+                customerPhone: customer?.phone || order.customerPhone || '',
+                customerOrders: []
+            });
         }
-        groupedOrders[customerName].push(order);
-    });
+        groupedOrders.get(key).customerOrders.push(order);
+    }
 
-    // Priority sorting for customer folders: Newest bill date first -> Alphabetical
-    const folderKeys = Object.keys(groupedOrders).sort((a, b) => {
-        const ordersA = groupedOrders[a];
-        const ordersB = groupedOrders[b];
+    const folders = [...groupedOrders.values()];
+    for (const folder of folders) {
+        folder.customerOrders.sort((a, b) => new Date(b.date) - new Date(a.date));
+    }
+    folders.sort((a, b) => new Date(b.customerOrders[0].date) - new Date(a.customerOrders[0].date) ||
+        a.customerName.localeCompare(b.customerName));
 
-        const maxDateA = Math.max(...ordersA.map(o => new Date(o.date).getTime()));
-        const maxDateB = Math.max(...ordersB.map(o => new Date(o.date).getTime()));
-
-        if (maxDateA !== maxDateB) return maxDateB - maxDateA;
-        return a.localeCompare(b);
-    });
-
-    folderKeys.forEach((customerName, index) => {
-        // Ensure bills inside each folder are sorted newest first
-        const customerOrders = [...groupedOrders[customerName]].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
+    folders.forEach(({ customerName, customerPhone, customerOrders }, index) => {
         let totalDue = 0;
         customerOrders.forEach(order => {
             if (!isOrderAdjusted(order)) {
@@ -3171,7 +2999,7 @@ function renderBills() {
         const folderDiv = document.createElement('div');
         folderDiv.className = 'customer-folder';
 
-        const folderId = 'folder-' + customerName.replace(/[^a-zA-Z0-9]/g, '-');
+        const folderId = 'folder-' + index;
 
         // Auto-expand the very top folder or expand all if search query is active or unpaid filter is on
         const shouldExpand = index === 0 || query.length > 0 || currentBillsFilter === 'unpaid';
@@ -3182,12 +3010,15 @@ function renderBills() {
         folderHeader.onclick = () => toggleFolder(folderId);
         folderHeader.innerHTML = `
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                <h3>📁 ${customerName}</h3>
+                <h3>📁 ${escapeHtml(customerName)}</h3>
+                <span class="folder-customer-phone"></span>
                 <span class="folder-badge">${customerOrders.length} Bill${customerOrders.length > 1 ? 's' : ''}</span>
                 ${totalDue > 0 ? `<span style="font-size:0.85rem; color:var(--danger-color); font-weight:bold; border: 1px solid var(--danger-color); padding: 2px 6px; border-radius: 4px;">Due: ₹${totalDue.toFixed(2)}</span>` : `<span style="font-size:0.85rem; color:var(--success-color); font-weight:bold;">All Paid</span>`}
             </div>
             <span class="folder-icon" id="icon-${folderId}">${shouldExpand ? '▲' : '▼'}</span>
         `;
+
+        folderHeader.querySelector('.folder-customer-phone').textContent = customerPhone;
 
         // Folder Content (Bills)
         const folderContent = document.createElement('div');
@@ -3207,7 +3038,7 @@ function renderBills() {
 
             let itemsHtml = '<ul class="bill-items">';
             (order.items || []).forEach(item => {
-                itemsHtml += `<li><span>${item.name} × ${item.quantity}</span><span>₹${((parseFloat(item.price) || 0) * (parseFloat(item.quantity) || 0)).toFixed(2)}</span></li>`;
+                itemsHtml += `<li><span>${escapeHtml(item.name)} × ${escapeHtml(item.quantity)}</span><span>₹${getLineTotal(item).toFixed(2)}</span></li>`;
             });
             if (order.previousDue > 0) {
                 itemsHtml += `<li style="border-top: 1px dashed var(--panel-border); padding-top: 6px; margin-top: 4px; color: var(--danger-color); font-weight: 500;"><span>Previous Due</span><span>₹${(parseFloat(order.previousDue) || 0).toFixed(2)}</span></li>`;
@@ -3249,7 +3080,7 @@ function renderBills() {
                         <span>Due</span>
                         <span>₹${pending.toFixed(2)}</span>
                     </div>
-                    ${pending > 0 ? `<button class="btn btn-secondary full-width" style="margin-top:8px; font-size:0.85rem; padding:6px; border-color:var(--success-color); color:var(--success-color); font-weight:600;" onclick="openPaymentModal('${order.id}')">💰 Record Payment</button>` : `<div style="text-align:center; color:var(--success-color); font-size:0.85rem; margin-top:8px; font-weight:600;">✅ Fully Paid</div>`}
+                    ${pending > 0 ? `<button class="btn btn-secondary full-width" style="margin-top:8px; font-size:0.85rem; padding:6px; border-color:var(--success-color); color:var(--success-color); font-weight:600;" onclick="openPaymentModal(${htmlArgument(order.id)})">💰 Record Payment</button>` : `<div style="text-align:center; color:var(--success-color); font-size:0.85rem; margin-top:8px; font-weight:600;">✅ Fully Paid</div>`}
                 `;
             }
 
@@ -3257,14 +3088,15 @@ function renderBills() {
             billCard.innerHTML = `
                 <div class="bill-card-header">
                     <div>
-                        <div style="font-weight: 700; color: var(--accent-color); font-size: 0.95rem; margin-bottom: 2px;"># ${invoiceNum}</div>
+                        <div style="font-weight: 700; color: var(--accent-color); font-size: 0.95rem; margin-bottom: 2px;"># ${escapeHtml(invoiceNum)}</div>
                         <span class="bill-date">${dateString}</span>
                     </div>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                        <button class="btn btn-secondary share-bill-btn" onclick="startEditBill('${order.id}')" title="Edit this bill">✏️ Edit</button>
-                        <button class="btn btn-secondary share-bill-btn" onclick="shareBill('${order.id}')" title="Share this bill">📤 Share</button>
-                        <button class="btn btn-primary share-bill-btn" onclick="printInvoice('${order.id}')" title="Print Invoice">🖨️ Print</button>
-                        <button class="btn btn-danger share-bill-btn" style="padding: 0.4rem; min-width: unset;" onclick="deleteBill('${order.id}')" title="Delete Bill">🗑️</button>
+                        <button class="btn btn-secondary share-bill-btn" onclick="startEditBill(${htmlArgument(order.id)})" title="Edit this bill">✏️ Edit</button>
+                        <button class="btn btn-secondary share-bill-btn" onclick="showBillPreviewModal(${htmlArgument(order.id)})">Preview</button>
+                        <button class="btn btn-secondary share-bill-btn" onclick="shareBill(${htmlArgument(order.id)})" title="Share this bill">📤 Share</button>
+                        <button class="btn btn-primary share-bill-btn" onclick="printInvoice(${htmlArgument(order.id)})" title="Print Invoice">🖨️ Print</button>
+                        <button class="btn btn-danger share-bill-btn" style="padding: 0.4rem; min-width: unset;" onclick="deleteBill(${htmlArgument(order.id)})" title="Delete Bill">🗑️</button>
                     </div>
                 </div>
                 ${itemsHtml}
@@ -3307,7 +3139,7 @@ function toggleAllFolders(expand) {
     });
 }
 
-function shareBill(orderId) {
+function shareBill(orderId, downloadOnly = false) {
     const order = orders.find(o => o.id === orderId);
     if (!order) {
         showToast('Bill not found.');
@@ -3316,11 +3148,11 @@ function shareBill(orderId) {
 
     const customer = customers.find(c => c.id === order.customerId) || {};
     const customerName = order.customerName || customer.name || 'Customer';
-    const customerAddress = order.customerAddress || customer.address || '';
+    const customerAddress = order.customerAddress ?? '';
 
     const invoiceNum = getInvoiceNumber(order);
-    const billElement = buildBillHTML(customerName, customerAddress, order.items, order.totalAmount, order.previousDue || 0, order.paidAmount || 0, order.additionalCost || 0, order.additionalCostReason || '', invoiceNum);
-    shareAsImage(billElement, `Bill for ${customerName}`);
+    const billElement = buildBillHTML(customerName, customerAddress, order.items, getOrderTotal(order), order.previousDue || 0, getOrderPaid(order), order.additionalCost || 0, order.additionalCostReason || '', invoiceNum, isOrderAdjusted(order), order.date);
+    shareAsImage(billElement, `Bill for ${customerName}`, downloadOnly);
 }
 
 function printInvoice(orderId) {
@@ -3329,14 +3161,15 @@ function printInvoice(orderId) {
 
     const customer = customers.find(c => c.id === order.customerId) || {};
     const customerName = order.customerName || customer.name || 'Customer';
-    const customerAddress = order.customerAddress || customer.address || '';
-    const customerPhone = order.customerPhone || customer.phone || '';
+    const customerAddress = order.customerAddress ?? '';
+    const customerPhone = order.customerPhone ?? '';
 
     const dateObj = new Date(order.date);
-    const dateString = dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const dateString = dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Kolkata' });
 
-    const paid = order.paidAmount || 0;
-    const balanceDue = order.totalAmount - paid;
+    const paid = getOrderPaid(order);
+    const balanceDue = getOrderDue(order);
+    const carriedForward = isOrderAdjusted(order);
 
     let itemsHtml = '';
     order.items.forEach((item, index) => {
@@ -3344,21 +3177,27 @@ function printInvoice(orderId) {
         itemsHtml += `
             <tr>
                 <td style="padding: 12px 15px; border-bottom: 1px solid #eee;">${index + 1}</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eee;"><strong>${item.name}</strong></td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}${unitStr}</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eee;"><strong>${escapeHtml(item.name)}</strong></td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: center;">${escapeHtml(item.quantity)}${escapeHtml(unitStr)}</td>
                 <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: right;">₹ ${item.price.toFixed(2)}</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: right;">₹ ${(item.price * item.quantity).toFixed(2)}</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eee; text-align: right;">₹ ${getLineTotal(item).toFixed(2)}</td>
             </tr>
         `;
     });
 
     const invoiceNum = getInvoiceNumber(order);
-    const subTotal = order.itemsTotal || (order.items || []).reduce((s, i) => s + (i.price * i.quantity), 0);
+    const subTotal = getItemsTotal(order.items || []);
+    const total = getOrderTotal(order);
+    const roundOff = roundMoney(total - subTotal - (order.previousDue || 0) - (order.additionalCost || 0));
     const printWindow = window.open('', '', 'width=800,height=900');
+    if (!printWindow) {
+        showToast('Allow pop-ups to print, or download the invoice image from its preview.', 'error');
+        return;
+    }
     printWindow.document.write(`
     <html>
     <head>
-        <title>Invoice - ${invoiceNum} - ${customerName}</title>
+        <title>Invoice - ${escapeHtml(invoiceNum)} - ${escapeHtml(customerName)}</title>
         <style>
             body { font-family: 'Inter', -apple-system, sans-serif; color: #333; margin: 0; padding: 40px; }
             .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 50px; }
@@ -3398,7 +3237,7 @@ function printInvoice(orderId) {
             <div style="text-align: right;">
                 <div class="invoice-title">INVOICE</div>
                 <div class="balance-box">
-                    <div class="balance-label">Balance Due</div>
+                    <div class="balance-label">${carriedForward ? 'Balance carried forward' : 'Balance Due'}</div>
                     <div class="balance-amount">₹ ${balanceDue.toFixed(2)}</div>
                 </div>
             </div>
@@ -3407,17 +3246,16 @@ function printInvoice(orderId) {
         <div class="info-section">
             <div class="bill-to">
                 <h3>Bill To</h3>
-                <strong>${customerName}</strong><br>
-                ${customerAddress ? `${customerAddress.replace(/\\n/g, '<br>')}<br>` : ''}
-                Customer ID: ${order.customerId}<br>
+                <strong>${escapeHtml(customerName)}</strong><br>
+                ${customerAddress ? `${escapeHtml(customerAddress).split(String.fromCharCode(10)).join('<br>')}<br>` : ''}
+                Customer ID: ${escapeHtml(order.customerId)}<br>
             </div>
             <div>
                 <table class="meta-table">
-                    <tr><td>Invoice No :</td><td><strong>${invoiceNum}</strong></td></tr>
+                    <tr><td>Invoice No :</td><td><strong>${escapeHtml(invoiceNum)}</strong></td></tr>
                     <tr><td>Invoice Date :</td><td>${dateString}</td></tr>
                     <tr><td>Terms :</td><td>Due On Receipt</td></tr>
-                    <tr><td>Due Date :</td><td>${dateString}</td></tr>
-                </table>
+                    </table>
             </div>
         </div>
 
@@ -3443,7 +3281,7 @@ function printInvoice(orderId) {
             </div>
             ${order.additionalCost ? `
             <div class="totals-row">
-                <span>${order.additionalCostReason || 'Extra Charges'}</span>
+                <span>${escapeHtml(order.additionalCostReason || 'Extra Charges')}</span>
                 <span>₹ ${order.additionalCost.toFixed(2)}</span>
             </div>` : ''}
             ${order.previousDue ? `
@@ -3451,9 +3289,14 @@ function printInvoice(orderId) {
                 <span>Previous Due</span>
                 <span>₹ ${order.previousDue.toFixed(2)}</span>
             </div>` : ''}
+            ${roundOff ? `
+            <div class="totals-row">
+                <span>Round Off</span>
+                <span>₹ ${roundOff.toFixed(2)}</span>
+            </div>` : ''}
             <div class="totals-row bold" style="margin-top: 10px; border-top: 1px solid #ddd; padding-top: 10px;">
                 <span>Total</span>
-                <span>₹ ${order.totalAmount.toFixed(2)}</span>
+                <span>₹ ${total.toFixed(2)}</span>
             </div>
             ${paid > 0 ? `
             <div class="totals-row" style="color: #10b981;">
@@ -3461,7 +3304,7 @@ function printInvoice(orderId) {
                 <span>-₹ ${paid.toFixed(2)}</span>
             </div>` : ''}
             <div class="balance-due-row">
-                <span>Balance Due</span>
+                <span>${carriedForward ? 'Balance carried forward' : 'Balance Due'}</span>
                 <span>₹ ${balanceDue.toFixed(2)}</span>
             </div>
         </div>
@@ -3482,6 +3325,7 @@ function printInvoice(orderId) {
     </body>
     </html>
     `);
+    printWindow.document.close();
 }
 
 function deleteBill(orderId) {
@@ -3494,37 +3338,56 @@ function deleteBill(orderId) {
     const dateObj = new Date(order.date);
     const dateString = dateObj.toLocaleDateString('en-IN');
 
-    showCustomConfirm(`Are you sure you want to delete the bill for ${customerName} dated ${dateString}?`).then(confirmed => {
+    showCustomConfirm(`Are you sure you want to delete the bill for ${customerName} dated ${dateString}?`).then(async confirmed => {
         if (!confirmed) return;
 
-        // Restore any old orders that were marked as adjusted with this deleted order
-        orders.forEach(o => {
-            if (o.adjustedWithOrderId === orderId) {
-                o.adjustedWithOrderId = null;
-                // Reset paidAmount back to 0 if it was auto-marked paid during rollover
-                o.paidAmount = 0;
-                cloudUpsertOrder(o);
-            }
-        });
-
-        orders = orders.filter(o => o.id !== orderId);
-        localStorage.setItem('taruchhaya_orders', JSON.stringify(orders));
-
-        // Sync delete to cloud
-        if (typeof cloudDeleteOrder === 'function') {
-            cloudDeleteOrder(orderId);
+        const hasActiveAllocation = paymentHistory.some(p => ['receipt', 'credit'].includes(p.details?.kind) &&
+            !getPaymentReversal(p.id) && p.details.allocations?.some(a => a.orderId === orderId));
+        if (!orders.includes(order) || isOrderAdjusted(order) || getOrderPaid(order) > 0 || hasActiveAllocation) {
+            showToast('Only an unpaid bill that has not been carried forward can be deleted. Resolve its payments or carry-forward first.', 'error');
+            return;
         }
 
-        renderBills();
-        if (typeof renderHomeDashboard === 'function') renderHomeDashboard();
+        const restored = orders.filter(o => o.adjustedWithOrderId === orderId)
+            .map(o => ({ ...o, adjustedWithOrderId: null }));
+        if (!await saveCloudChanges({ orders: restored.map(orderCloudRow), delete_order: orderId })) return;
+
+        refreshPaymentViews();
         showToast('Bill deleted successfully');
     });
 }
 
 // --- Logout ---
-function logout() {
-    localStorage.removeItem('taruchhaya_loggedIn');
-    window.location.href = 'login.html';
+function endSession() {
+    signedIn = false;
+    customers = [];
+    products = [];
+    orders = [];
+    paymentHistory = [];
+    currentCustomer = null;
+    cart = [];
+    document.body.classList.add('checking-session');
+    document.getElementById('sessionStatus').hidden = false;
+    sessionStorage.removeItem('taruchhaya_auth');
+    for (const key of ['loggedIn', 'customers', 'products', 'orders', 'payments']) {
+        localStorage.removeItem('taruchhaya_' + key);
+    }
+    const url = localStorage.getItem('taruchhaya_supabase_url') || SUPABASE_URL;
+    localStorage.removeItem('sb-' + new URL(url).hostname.split('.')[0] + '-auth-token');
+    window.location.replace('login.html');
+}
+
+async function logout() {
+    if (cloudWrite) {
+        showToast('Wait for the current save before signing out.');
+        return;
+    }
+    document.body.classList.add('checking-session');
+    try {
+        await supabaseClient.auth.signOut({ scope: 'local' });
+    } finally {
+        endSession();
+    }
 }
 
 // --- Mobile Menu ---
@@ -3583,7 +3446,7 @@ function showToast(message, type = 'success') {
     toast.className = `toast-message ${type}`;
 
     let icon = type === 'error' ? '⚠️' : '✅';
-    toast.innerHTML = `<span class="toast-icon">${icon}</span> <span>${message}</span>`;
+    toast.innerHTML = `<span class="toast-icon">${icon}</span> <span>${escapeHtml(message)}</span>`;
 
     container.appendChild(toast);
 
