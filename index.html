@@ -9,11 +9,15 @@
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css?v=18">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="lib/html2canvas.min.js"></script>
+    <style>
+        body.checking-session > :not(#sessionStatus):not(script) { display: none !important; }
+        #sessionStatus { margin: 2rem; }
+    </style>
 </head>
 
-<body>
+<body class="checking-session">
+    <p id="sessionStatus" role="status">Checking your sign-in…</p>
     <!-- Mobile Side Menu -->
     <div id="mobileSideMenu"
         style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; opacity: 0; transition: opacity 0.3s;"
@@ -280,11 +284,13 @@
                 <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; gap: 15px; flex-wrap: wrap;">
                         <h2>Saved Bills</h2>
+                        <button type="button" class="btn btn-secondary" onclick="exportAccountingCsv('invoices')">Export invoices CSV</button>
                         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex: 1; justify-content: flex-end;">
                             <div class="search-field-wrap" style="max-width: 280px; width: 100%;">
                                 <span class="search-icon" style="left: 12px; font-size: 1rem; position: absolute; pointer-events: none;">🔍</span>
                                 <input type="text" id="billSearchInput" class="premium-search-input" placeholder="Search by invoice #, customer..." oninput="renderBills()" style="padding: 0.5rem 0.5rem 0.5rem 2.2rem; font-size: 0.9rem;">
                             </div>
+                            <button type="button" id="clearBillsCustomer" class="btn btn-secondary" onclick="clearBillsCustomerFilter()" hidden></button>
                         </div>
                     </div>
                     <!-- Bills Filter Tabs -->
@@ -304,6 +310,7 @@
                 <div class="glass-panel section-card" style="height: 100%; display: flex; flex-direction: column;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; gap: 15px; flex-wrap: wrap;">
                         <h2>Payment History</h2>
+                        <button type="button" class="btn btn-secondary" onclick="exportAccountingCsv('payments')">Export payments CSV</button>
                         <div class="search-field-wrap" style="max-width: 300px; width: 100%;">
                             <span class="search-icon" style="left: 12px; font-size: 1rem; position: absolute; pointer-events: none;">🔍</span>
                             <input type="text" id="paymentHistorySearchInput" class="premium-search-input" placeholder="Search customer, mode, amount..." oninput="renderPaymentHistory()" style="padding: 0.5rem 0.5rem 0.5rem 2.2rem; font-size: 0.9rem;">
@@ -448,7 +455,7 @@
 
     <!-- Confirm Order Modal -->
     <div id="confirmOrderModal" class="modal">
-        <div class="modal-content glass-panel" style="text-align: center; transition: all 0.3s ease; max-width: 520px; width: 95%;">
+        <div class="modal-content glass-panel" style="max-height: 90dvh; overflow-y: auto; text-align: center; transition: all 0.3s ease; max-width: 520px; width: 95%;">
             <span class="close" onclick="closeModal('confirmOrderModal')">&times;</span>
             <div style="font-size: 2.5rem; margin-bottom: 8px;">📦</div>
             <h2 style="color: #0070f3; margin-bottom: 8px;">Ready to Place Order?</h2>
@@ -483,6 +490,14 @@
                         <option value="Card">Card</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label for="advancePaymentDate">Payment date and time (optional)</label>
+                    <input type="datetime-local" id="advancePaymentDate">
+                </div>
+                <div class="form-group">
+                    <label for="advancePaymentReference">Payment reference (optional)</label>
+                    <input type="text" id="advancePaymentReference" maxlength="120">
+                </div>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
@@ -499,7 +514,7 @@
 
     <!-- Record Payment Modal -->
     <div id="paymentModal" class="modal">
-        <div class="modal-content glass-panel">
+        <div class="modal-content glass-panel" style="max-height: 90dvh; overflow-y: auto;">
             <span class="close" onclick="closeModal('paymentModal')">&times;</span>
             <h2>Record Payment</h2>
             <form id="paymentForm" onsubmit="savePayment(event)">
@@ -520,7 +535,7 @@
                 </div>
                 <div class="form-group">
                     <label for="paymentAmount">Amount (₹)</label>
-                    <input type="number" id="paymentAmount" required min="1" step="0.01" placeholder="Enter amount">
+                    <input type="number" id="paymentAmount" required min="0.01" step="0.01" placeholder="Enter amount">
                 </div>
                 <div class="form-group">
                     <label for="paymentMode">Mode of Payment</label>
@@ -531,8 +546,35 @@
                         <option value="Card">Card</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label for="paymentReceivedDate">Payment date and time (optional)</label>
+                    <input type="datetime-local" id="paymentReceivedDate">
+                </div>
+                <div class="form-group">
+                    <label for="paymentReference">Payment reference (optional)</label>
+                    <input type="text" id="paymentReference" maxlength="120">
+                </div>
+                <p id="paymentCreditBalance" aria-live="polite"></p>
                 <button type="submit" class="btn btn-primary full-width">Save Payment</button>
+                <button type="button" id="applyPaymentCredit" class="btn btn-secondary full-width"
+                    onclick="savePayment(event, true)" hidden>Apply Credit for Entered Amount</button>
             </form>
+        </div>
+    </div>
+
+    <div id="paymentDetailsModal" class="modal">
+        <div class="modal-content glass-panel" style="max-height: 90dvh; overflow-y: auto;" role="dialog" aria-modal="true" aria-labelledby="paymentDetailsTitle">
+            <button type="button" class="close" aria-label="Close payment details"
+                onclick="closeModal('paymentDetailsModal')">&times;</button>
+            <h2 id="paymentDetailsTitle">Payment Details</h2>
+            <div id="paymentDetailsBody"></div>
+            <div id="paymentReversalControls" hidden>
+                <div class="form-group">
+                    <label for="paymentReversalReason">Reason for reversal</label>
+                    <input type="text" id="paymentReversalReason" maxlength="200">
+                </div>
+                <button type="button" id="reversePaymentButton" class="btn btn-danger">Reverse Entry</button>
+            </div>
         </div>
     </div>
 
@@ -546,14 +588,23 @@
             <div id="billPreviewContent" style="overflow-y: auto; flex: 1; background: white; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; zoom: 0.9;">
                 <!-- Bill HTML injected here -->
             </div>
-            <div style="margin-top: 15px; display: flex; justify-content: flex-end; gap: 10px;">
+            <div style="margin-top: 15px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px;">
                 <button class="btn btn-secondary" onclick="closeModal('billPreviewModal')">Close</button>
+                <button type="button" class="btn btn-secondary" id="invoiceHistoryBtn">Change history</button>
+                <button type="button" class="btn btn-secondary" id="previewDownloadBtn">Download image</button>
                 <button class="btn btn-primary" id="previewPrintBtn">🖨️ Print</button>
             </div>
         </div>
     </div>
 
-    <!-- Payment History Modal (Removed - Now a View) -->
+    <div class="modal" id="invoiceHistoryModal">
+        <section class="modal-content glass-panel" role="dialog" aria-modal="true" aria-labelledby="invoiceHistoryTitle"
+            style="max-width: 680px; max-height: 90dvh; overflow: auto;">
+            <button type="button" class="close" aria-label="Close invoice history" onclick="closeModal('invoiceHistoryModal')">&times;</button>
+            <h2 id="invoiceHistoryTitle">Invoice change history</h2>
+            <div id="invoiceHistoryContent" aria-live="polite"></div>
+        </section>
+    </div>
 
     <!-- Mobile Bottom Navigation -->
     <nav class="mobile-nav glass-panel">
@@ -575,8 +626,8 @@
         </button>
     </nav>
 
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=16"></script>
+    <script src="lib/supabase.js"></script>
+    <script src="app.js?v=19"></script>
 </body>
 
 </html>
