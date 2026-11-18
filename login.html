@@ -103,21 +103,21 @@
     </div>
 
     <!-- Load Supabase JS -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="lib/supabase.js"></script>
 
     <script>
-        if (localStorage.getItem('taruchhaya_loggedIn') === 'true') {
-            window.location.href = 'index.html';
-        }
-
         const SUPABASE_URL = "https://cofigoxqaltwdetcodug.supabase.co";
         const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNvZmlnb3hxYWx0d2RldGNvZHVnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4ODI1NDMsImV4cCI6MjA5NTQ1ODU0M30.7ZXIY6e8MNlMQb08nDNOe69cSlTl8M6xlJOKw8_h3wE";
-        const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        const supabaseClient = window.supabase.createClient(
+            localStorage.getItem('taruchhaya_supabase_url') || SUPABASE_URL,
+            localStorage.getItem('taruchhaya_supabase_key') || SUPABASE_KEY,
+            { auth: { storage: sessionStorage, storageKey: 'taruchhaya_auth' } }
+        );
 
         document.getElementById('loginForm').addEventListener('submit', async function (e) {
             e.preventDefault();
             const email = document.getElementById('email').value.trim();
-            const pass = document.getElementById('password').value.trim();
+            const pass = document.getElementById('password').value;
 
             document.getElementById('errorMsg').style.display = 'none';
             document.getElementById('loginBtn').style.opacity = '0.5';
@@ -126,7 +126,7 @@
 
             try {
                 // Authenticate with Supabase
-                const { data, error } = await supabaseClient.auth.signInWithPassword({
+                const { error } = await supabaseClient.auth.signInWithPassword({
                     email: email,
                     password: pass
                 });
@@ -136,12 +136,11 @@
                 }
 
                 // Success
-                localStorage.setItem('taruchhaya_loggedIn', 'true');
                 document.getElementById('successMsg').style.display = 'block';
                 document.getElementById('loginBtn').textContent = 'Success!';
 
                 setTimeout(() => {
-                    window.location.href = 'index.html';
+                    window.location.replace('index.html');
                 }, 800);
 
             } catch (err) {
