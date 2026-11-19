@@ -1,6 +1,7 @@
 let customers = [];
 let products = [];
 let orders = [];
+let recoveredCarrySources = new Set();
 let paymentHistory = [];
 let cloudRevision = null;
 let cloudLoad = null;
@@ -91,8 +92,66 @@ function orderBelongsToCustomer(order, customer) {
     return matches.length === 1 && String(matches[0].id) === String(customer.id);
 }
 
+function getAdjustedOrder(order) {
+    return order?.adjustedWithOrderId ? orders.find(o => o.id === order.adjustedWithOrderId) : undefined;
+}
+
 function isOrderAdjusted(order) {
-    return !!order?.adjustedWithOrderId && orders.some(o => o.id === order.adjustedWithOrderId);
+    return !!getAdjustedOrder(order);
+}
+
+function getCarryAdjustmentLabel(order) {
+    const target = getAdjustedOrder(order);
+    if (!target) return '';
+    const date = new Date(target.date).toLocaleDateString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata'
+    });
+    return `Adjusted with the ${date} bill (${getInvoiceNumber(target)})`;
+}
+
+function getOrderCustomerKey(order) {
+    return String(order.customerId ?? '').trim() ||
+        customers.find(customer => orderBelongsToCustomer(order, customer))?.id?.toString();
+}
+
+function recoverMissingCarryLinks() {
+    // Legacy invoices saved the carried amount and its source links in separate writes.
+    const ordersByCustomer = new Map();
+    const linkedDueByTarget = new Map();
+    for (const order of orders) {
+        const customerKey = getOrderCustomerKey(order);
+        const issuedAt = Date.parse(order.date);
+        if (!customerKey || !Number.isFinite(issuedAt)) continue;
+        if (!ordersByCustomer.has(customerKey)) ordersByCustomer.set(customerKey, []);
+        const due = getOrderDue(order);
+        ordersByCustomer.get(customerKey).push({ order, issuedAt, due });
+        if (order.adjustedWithOrderId) {
+            const target = order.adjustedWithOrderId;
+            linkedDueByTarget.set(target, (linkedDueByTarget.get(target) || 0) + due);
+        }
+    }
+
+    const recovered = new Set();
+    for (const bills of ordersByCustomer.values()) {
+        bills.sort((a, b) => a.issuedAt - b.issuedAt);
+        let openBills = [];
+        for (const { order, issuedAt, due } of bills) {
+            if (order.previousDue > 0 && openBills.length) {
+                const missingDue = roundMoney(order.previousDue - (linkedDueByTarget.get(order.id) || 0));
+                const openDue = roundMoney(openBills.reduce((sum, bill) => sum + bill.due, 0));
+                // The old billing flow carried all open balances. Require a match for the full set.
+                if (missingDue === openDue && openBills.every(bill => bill.issuedAt < issuedAt)) {
+                    for (const bill of openBills) {
+                        bill.order.adjustedWithOrderId = order.id;
+                        recovered.add(bill.order.id);
+                    }
+                    openBills = [];
+                }
+            }
+            if (!order.adjustedWithOrderId && due > 0) openBills.push({ order, issuedAt, due });
+        }
+    }
+    return recovered;
 }
 
 function getPayableOrders(customer) {
@@ -246,6 +305,14 @@ async function refreshCloudSnapshot() {
             totalAmount: r.total_amount == null ? null : Number(r.total_amount), paidAmount: Number(r.paid_amount || 0),
             date: r.date, customerAddress: r.customer_address, customerPhone: r.customer_phone, adjustedWithOrderId: r.adjusted_with_order_id || null
         }));
+        if (data.orders !== null || data.customers !== null) {
+            if (data.orders === null) {
+                for (const order of orders) {
+                    if (recoveredCarrySources.has(order.id)) order.adjustedWithOrderId = null;
+                }
+            }
+            recoveredCarrySources = recoverMissingCarryLinks();
+        }
         if (data.payments !== null) paymentHistory = data.payments.map(r => ({
             id: r.id, customerId: r.customer_id, customerName: r.customer_name || '', amount: Number(r.amount),
             mode: r.mode || 'Cash', date: r.date, details: r.details
@@ -310,6 +377,28 @@ function paymentCloudRow(payment) {
     };
 }
 
+function includeRecoveredCarryLinks(changes) {
+    if (!recoveredCarrySources.size || !changes.orders) return changes;
+    // Save recovered links alongside any invoice changes for the same customer.
+    const changedOrders = new Map(changes.orders.map(row => [row.id, row]));
+    const affectedCustomers = new Set();
+    for (const order of orders) {
+        if (changedOrders.has(order.id) || order.id === changes.delete_order) {
+            affectedCustomers.add(getOrderCustomerKey(order));
+        }
+    }
+    for (const row of changes.orders) {
+        if (row.customer_id != null) affectedCustomers.add(String(row.customer_id).trim());
+    }
+    for (const order of orders) {
+        if (recoveredCarrySources.has(order.id) && !changedOrders.has(order.id) &&
+            order.id !== changes.delete_order && affectedCustomers.has(getOrderCustomerKey(order))) {
+            changedOrders.set(order.id, orderCloudRow(order));
+        }
+    }
+    return { ...changes, orders: [...changedOrders.values()] };
+}
+
 async function resolvePendingSave() {
     const id = sessionStorage.getItem(pendingSaveKey);
     if (!id) return true;
@@ -341,7 +430,7 @@ async function saveCloudChanges(changes) {
             return false;
         }
         sessionStorage.setItem(pendingSaveKey, operation);
-        const args = { operation, expected_revision: cloudRevision, changes };
+        const args = { operation, expected_revision: cloudRevision, changes: includeRecoveredCarryLinks(changes) };
         updateCloudStatus('syncing');
         const uncertain = result => result.error && (!result.error.code || result.status >= 500);
         let result = await supabaseClient.rpc('taruchhaya_save', args);
@@ -1326,9 +1415,8 @@ async function finalizeOrderAndShare() {
         const includePrevDueCheckbox = document.getElementById('includePreviousDueCheckbox');
         const shouldIncludePrevDue = includePrevDueCheckbox ? includePrevDueCheckbox.checked : false;
 
-        // Customer existing pending dues across all previous orders
-        const existingDues = getCustomerTotalDue(customer);
-        const previousDue = shouldIncludePrevDue ? existingDues : 0;
+        const sourceOrders = shouldIncludePrevDue ? getPayableOrders(customer) : [];
+        const previousDue = roundMoney(sourceOrders.reduce((sum, order) => sum + getOrderDue(order), 0));
 
         const additionalCostAmountInput = document.getElementById('additionalCostAmount');
         const additionalCost = roundMoney(Number(additionalCostAmountInput?.value) || 0);
@@ -1370,8 +1458,7 @@ async function finalizeOrderAndShare() {
             return;
         }
         const newOrderId = 'ord_v2_' + invoiceNumber;
-        const carriedOrders = shouldIncludePrevDue ? getPayableOrders(customer)
-            .map(order => ({ ...order, adjustedWithOrderId: newOrderId })) : [];
+        const carriedOrders = sourceOrders.map(order => ({ ...order, adjustedWithOrderId: newOrderId }));
 
         const newOrder = {
             id: newOrderId,
@@ -1398,11 +1485,12 @@ async function finalizeOrderAndShare() {
 
         // Build shareable bill HTML
         const invoiceNum = getInvoiceNumber(newOrder);
-        const billElement = buildBillHTML(customer.name, customer.address, items, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason, invoiceNum, false, newOrder.date);
+        const billElement = buildBillHTML(customer.name, customer.address, items, grandTotal, previousDue, advanceAmount, additionalCost, additionalCostReason, invoiceNum, '', newOrder.date);
 
         // Reset inputs
         if (additionalCostAmountInput) additionalCostAmountInput.value = '';
         if (additionalCostReasonInput) additionalCostReasonInput.value = '';
+        if (includePrevDueCheckbox) includePrevDueCheckbox.checked = true;
 
         // Share or copy as image
         await shareAsImage(billElement, `Bill for ${customer.name}`);
@@ -1610,7 +1698,7 @@ async function finalizeBillEdits() {
             additionalCost,
             additionalCostReason,
             invoiceNum,
-            isOrderAdjusted(order),
+            getCarryAdjustmentLabel(order),
             order.date
         );
 
@@ -1680,7 +1768,7 @@ async function finalizeBillEdits() {
 }
 
 // --- Utility: Build bill HTML ---
-function buildBillHTML(customerName, customerAddress, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '', invoiceNum = '', carriedForward = false, issuedAt) {
+function buildBillHTML(customerName, customerAddress, items, grandTotal, previousDue = 0, advanceAmount = 0, additionalCost = 0, additionalCostReason = '', invoiceNum = '', adjustmentLabel = '', issuedAt) {
     const now = new Date(issuedAt);
     const validDate = Number.isFinite(now.getTime());
     const date = validDate ? now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Kolkata' }) : 'Unavailable';
@@ -1805,9 +1893,10 @@ function buildBillHTML(customerName, customerAddress, items, grandTotal, previou
 
     html += `
                 <div style="display: flex; justify-content: space-between; padding: 12px 0; border-top: 2px solid #e2e8f0; margin-top: 8px;">
-                    <span style="color: #0f172a; font-size: 18px; font-weight: 700;">${carriedForward ? 'Balance carried forward' : 'Balance Due'}</span>
+                    <span style="color: #0f172a; font-size: 18px; font-weight: 700;">${adjustmentLabel ? 'Balance carried forward' : 'Balance Due'}</span>
                     <span style="color: #ef4444; font-size: 18px; font-weight: 700;">₹${balanceDue.toFixed(2)}</span>
                 </div>
+                ${adjustmentLabel ? `<div style="color: #475569; font-size: 14px;">${escapeHtml(adjustmentLabel)}</div>` : ''}
             </div>
         </div>
         
@@ -2810,7 +2899,7 @@ function showBillPreviewModal(orderId) {
     const customerName = order.customerName || customer.name || 'Customer';
     const customerAddress = order.customerAddress ?? '';
     const invoiceNum = getInvoiceNumber(order);
-    const billElement = buildBillHTML(customerName, customerAddress, order.items, getOrderTotal(order), order.previousDue || 0, getOrderPaid(order), order.additionalCost || 0, order.additionalCostReason || '', invoiceNum, isOrderAdjusted(order), order.date);
+    const billElement = buildBillHTML(customerName, customerAddress, order.items, getOrderTotal(order), order.previousDue || 0, getOrderPaid(order), order.additionalCost || 0, order.additionalCostReason || '', invoiceNum, getCarryAdjustmentLabel(order), order.date);
 
     document.getElementById('previewDownloadBtn').onclick = () => shareBill(orderId, true);
     document.getElementById('invoiceHistoryBtn').onclick = () => showInvoiceHistory(orderId);
@@ -2973,6 +3062,7 @@ function renderBills() {
         const key = customerId ? 'customer:' + customerId : 'invoice:' + order.id;
         if (!groupedOrders.has(key)) {
             groupedOrders.set(key, {
+                customer,
                 customerName: customer?.name || order.customerName || 'Unknown Customer',
                 customerPhone: customer?.phone || order.customerPhone || '',
                 customerOrders: []
@@ -2988,21 +3078,14 @@ function renderBills() {
     folders.sort((a, b) => new Date(b.customerOrders[0].date) - new Date(a.customerOrders[0].date) ||
         a.customerName.localeCompare(b.customerName));
 
-    folders.forEach(({ customerName, customerPhone, customerOrders }, index) => {
-        let totalDue = 0;
-        customerOrders.forEach(order => {
-            if (!isOrderAdjusted(order)) {
-                totalDue += getOrderDue(order);
-            }
-        });
+    folders.forEach(({ customer, customerName, customerPhone, customerOrders }, index) => {
+        const totalDue = customer ? getCustomerTotalDue(customer) : roundMoney(customerOrders.reduce(
+            (sum, order) => sum + (isOrderAdjusted(order) ? 0 : getOrderDue(order)), 0));
 
         const folderDiv = document.createElement('div');
         folderDiv.className = 'customer-folder';
 
         const folderId = 'folder-' + index;
-
-        // Auto-expand the very top folder or expand all if search query is active or unpaid filter is on
-        const shouldExpand = index === 0 || query.length > 0 || currentBillsFilter === 'unpaid';
 
         // Folder Header
         const folderHeader = document.createElement('div');
@@ -3015,7 +3098,7 @@ function renderBills() {
                 <span class="folder-badge">${customerOrders.length} Bill${customerOrders.length > 1 ? 's' : ''}</span>
                 ${totalDue > 0 ? `<span style="font-size:0.85rem; color:var(--danger-color); font-weight:bold; border: 1px solid var(--danger-color); padding: 2px 6px; border-radius: 4px;">Due: ₹${totalDue.toFixed(2)}</span>` : `<span style="font-size:0.85rem; color:var(--success-color); font-weight:bold;">All Paid</span>`}
             </div>
-            <span class="folder-icon" id="icon-${folderId}">${shouldExpand ? '▲' : '▼'}</span>
+            <span class="folder-icon" id="icon-${folderId}">▼</span>
         `;
 
         folderHeader.querySelector('.folder-customer-phone').textContent = customerPhone;
@@ -3024,7 +3107,7 @@ function renderBills() {
         const folderContent = document.createElement('div');
         folderContent.id = folderId;
         folderContent.className = 'customer-folder-content';
-        folderContent.style.display = shouldExpand ? 'block' : 'none';
+        folderContent.style.display = 'none';
 
         customerOrders.forEach(order => {
             const dateObj = new Date(order.date);
@@ -3050,21 +3133,13 @@ function renderBills() {
             const pending = getOrderDue(order);
 
             let footerHtml = '';
-            if (isOrderAdjusted(order)) {
-                const adjustedOrder = orders.find(o => o.id === order.adjustedWithOrderId);
-                let adjustedDateString = 'a newer bill';
-                if (adjustedOrder) {
-                    const d = new Date(adjustedOrder.date);
-                    adjustedDateString = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) + ' bill';
-                }
+            const adjustmentLabel = getCarryAdjustmentLabel(order);
+            if (adjustmentLabel) {
                 footerHtml = `
-                    <div style="display:flex; justify-content:space-between; width:100%; margin-bottom: 8px;">
-                        <span>Total</span>
-                        <strong>₹${total.toFixed(2)}</strong>
-                    </div>
-                    <div style="text-align:center; color:var(--accent-color); font-size:0.85rem; font-weight:600; padding: 6px; border: 1px dashed var(--accent-color); border-radius: 6px;">
-                        🔄 Adjusted with the ${adjustedDateString}
-                    </div>
+                    <button type="button" class="btn btn-secondary full-width"
+                        onclick="showBillPreviewModal(${htmlArgument(order.adjustedWithOrderId)})">
+                        ${escapeHtml(adjustmentLabel)}
+                    </button>
                 `;
             } else {
                 footerHtml = `
@@ -3151,7 +3226,7 @@ function shareBill(orderId, downloadOnly = false) {
     const customerAddress = order.customerAddress ?? '';
 
     const invoiceNum = getInvoiceNumber(order);
-    const billElement = buildBillHTML(customerName, customerAddress, order.items, getOrderTotal(order), order.previousDue || 0, getOrderPaid(order), order.additionalCost || 0, order.additionalCostReason || '', invoiceNum, isOrderAdjusted(order), order.date);
+    const billElement = buildBillHTML(customerName, customerAddress, order.items, getOrderTotal(order), order.previousDue || 0, getOrderPaid(order), order.additionalCost || 0, order.additionalCostReason || '', invoiceNum, getCarryAdjustmentLabel(order), order.date);
     shareAsImage(billElement, `Bill for ${customerName}`, downloadOnly);
 }
 
@@ -3169,7 +3244,8 @@ function printInvoice(orderId) {
 
     const paid = getOrderPaid(order);
     const balanceDue = getOrderDue(order);
-    const carriedForward = isOrderAdjusted(order);
+    const adjustmentLabel = getCarryAdjustmentLabel(order);
+    const balanceLabel = adjustmentLabel ? 'Balance carried forward' : 'Balance Due';
 
     let itemsHtml = '';
     order.items.forEach((item, index) => {
@@ -3237,7 +3313,7 @@ function printInvoice(orderId) {
             <div style="text-align: right;">
                 <div class="invoice-title">INVOICE</div>
                 <div class="balance-box">
-                    <div class="balance-label">${carriedForward ? 'Balance carried forward' : 'Balance Due'}</div>
+                    <div class="balance-label">${balanceLabel}</div>
                     <div class="balance-amount">₹ ${balanceDue.toFixed(2)}</div>
                 </div>
             </div>
@@ -3304,9 +3380,10 @@ function printInvoice(orderId) {
                 <span>-₹ ${paid.toFixed(2)}</span>
             </div>` : ''}
             <div class="balance-due-row">
-                <span>${carriedForward ? 'Balance carried forward' : 'Balance Due'}</span>
+                <span>${balanceLabel}</span>
                 <span>₹ ${balanceDue.toFixed(2)}</span>
             </div>
+            ${adjustmentLabel ? `<p>${escapeHtml(adjustmentLabel)}</p>` : ''}
         </div>
 
         <div class="notes">
@@ -3363,6 +3440,7 @@ function endSession() {
     customers = [];
     products = [];
     orders = [];
+    recoveredCarrySources.clear();
     paymentHistory = [];
     currentCustomer = null;
     cart = [];
